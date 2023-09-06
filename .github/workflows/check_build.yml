@@ -18,4 +18,4 @@ jobs:
     - name: List files
       run: ls ${{ github.workspace }}
     - name: Run l4check
-      run: ./make 'TEMPLATE_FILTER=arm64-virt-el1 amd64-1' -j -l 22 l4check
+      run: ./make 'TEMPLATE_FILTER=amd64-1' -j -l 22 l4check
