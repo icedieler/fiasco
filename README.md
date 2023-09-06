@@ -1,7 +1,7 @@
 # The L4Re Microkernel Repository
 
 This repository contains the source code of the L4Re microkernel (also known as
-the Fiasco microkernel). User level applications are not included in this
+the Fiasco.OC microkernel). User level applications are not included in this
 package.
 
 The L4Re microkernel is used to construct flexible systems that support
