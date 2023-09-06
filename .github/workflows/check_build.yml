@@ -16,6 +16,8 @@ jobs:
       uses: actions/checkout@v3
     - run: echo "The ${{ github.repository }} repo has been cloned to ."
     - name: List files
-      run: ls ${{ github.workspace }}
+      run: |
+        ls ${{ github.workspace }}
+    - run: echo "This job's status is ${{ job.status }}."
     - name: Run l4check
       run: ./make 'TEMPLATE_FILTER=amd64-1' -j -l 22 l4check
