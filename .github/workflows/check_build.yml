@@ -11,7 +11,7 @@ jobs:
 
     runs-on: ubuntu-latest
 
-        steps:
+    steps:
     - uses: actions/checkout@v3
     - name: l4check
       run: ./make 'TEMPLATE_FILTER=arm64-virt-el1 amd64-1' -j -l 22 l4check
