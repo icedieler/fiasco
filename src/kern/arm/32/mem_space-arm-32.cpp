@@ -16,27 +16,12 @@ IMPLEMENTATION [arm && 32bit && cpu_virt]:
 
 static Address __mem_space_syscall_page;
 
-IMPLEMENT_OVERRIDE inline
-template< typename T >
-T
-Mem_space::peek_user(T const *addr)
-{
-  Address pa = virt_to_phys((Address)addr);
-  if (pa == ~0UL)
-    return ~0;
-
-  Address ka = Mem_layout::phys_to_pmem(pa);
-  if (ka == ~0UL)
-    return ~0;
-
-  return *reinterpret_cast<T const *>(ka);
-}
-
 PROTECTED static
 void
 Mem_space::set_syscall_page(void *p)
 {
-  __mem_space_syscall_page = pmem_to_phys((Address)p);
+  __mem_space_syscall_page =
+    Mem_layout::pmem_to_phys(reinterpret_cast<Address>(p));
 }
 
 PROTECTED
@@ -50,9 +35,9 @@ Mem_space::sync_kernel()
 
   extern char kern_lib_start[];
 
-  Phys_mem_addr pa(Kmem::kdir->virt_to_phys((Address)kern_lib_start));
-  pte.set_page(pte.make_page(pa, Page::Attr(Page::Rights::URX(),
-                                            Page::Type::Normal())));
+  Phys_mem_addr pa(Kmem::kdir->virt_to_phys(
+                     reinterpret_cast<Address>(kern_lib_start)));
+  pte.set_page(pa, Page::Attr::space_local(Page::Rights::URX()));
 
   pte.write_back_if(true, c_asid());
 
@@ -63,8 +48,7 @@ Mem_space::sync_kernel()
     return -1;
 
   pa = Phys_mem_addr(__mem_space_syscall_page);
-  pte.set_page(pte.make_page(pa, Page::Attr(Page::Rights::URX(),
-                                            Page::Type::Normal())));
+  pte.set_page(pa, Page::Attr::space_local(Page::Rights::URX()));
 
   pte.write_back_if(true, c_asid());
 

@@ -53,7 +53,7 @@ private:
       R r = R::UR();
       if (raw & 2) r |= R::W();
 
-      return Attr(r, Page::Type::Normal());
+      return Attr::space_local(r);
     }
 
     bool add_attribs(Page::Attr attr)
@@ -133,7 +133,7 @@ public:
   static void create_identity_map();
   static Dmar_pt *identity_map;
 
-  void tlb_flush(bool) override;
+  void tlb_flush_current_cpu() override;
 
 private:
   Dmar_pt *_dmarpt;
@@ -154,6 +154,7 @@ IMPLEMENTATION [iommu]:
 #include "intel_iommu.h"
 #include "kmem_slab.h"
 #include "warn.h"
+#include "paging_bits.h"
 
 JDB_DEFINE_TYPENAME(Dmar_space, "DMA");
 
@@ -310,10 +311,10 @@ Dmar_space::create_identity_map()
 
   Unsigned64 epfn;
   epfn = min(1ULL << (Intel::Io_mmu::hw_addr_width - Config::PAGE_SHIFT),
-             (max_phys + Config::PAGE_SIZE - 1) >> Config::PAGE_SHIFT);
+             Pg::count(max_phys + Config::PAGE_SIZE - 1));
 
-  printf("IOMMU: identity map 0 - 0x%llx (%lldGB)\n", epfn << Config::PAGE_SHIFT,
-         (epfn << Config::PAGE_SHIFT) >> 30);
+  printf("IOMMU: identity map 0 - 0x%llx (%llu GiB)\n", Pg::size(epfn),
+         Pg::size(epfn) >> 30);
   for (Unsigned64 pfn = 0; pfn <= epfn; ++pfn)
     {
       auto i = identity_map->walk(Mem_space::V_pfn(pfn),
@@ -350,7 +351,7 @@ Dmar_space::Dmar_ptr::page_addr() const
 
 IMPLEMENT
 void
-Dmar_space::tlb_flush(bool)
+Dmar_space::tlb_flush_current_cpu()
 {
   if (_did)
     Intel::Io_mmu::queue_and_wait_on_all_iommus(
@@ -465,7 +466,7 @@ Dmar_space::add_page_size(Mem_space::Page_order o)
 
 PUBLIC
 void *
-Dmar_space::operator new (size_t size, void *p) throw()
+Dmar_space::operator new (size_t size, void *p) noexcept
 {
   (void)size;
   assert (size == sizeof (Dmar_space));
@@ -564,10 +565,13 @@ Dmar_space::~Dmar_space()
 }
 
 namespace {
-static inline void __attribute__((constructor)) FIASCO_INIT
+
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(dmar_space_register_factory)
 register_factory()
 {
   Kobject_iface::set_factory(L4_msg_tag::Label_dma_space,
                              &Task::generic_factory<Dmar_space>);
 }
+
 }

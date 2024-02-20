@@ -15,7 +15,7 @@ public:
 
   ~Jdb_kobject_name() {}
 
-  void *operator new (size_t) throw();
+  void *operator new (size_t) noexcept;
   void operator delete (void *);
 
 private:
@@ -43,7 +43,7 @@ IMPLEMENTATION:
 
 enum
 {
-  Name_buffer_size = 8192,
+  Name_buffer_size = 64 << 10,
   Name_entries = Name_buffer_size / sizeof(Jdb_kobject_name),
 };
 
@@ -65,7 +65,7 @@ static Spin_lock<> allocator_lock;
 
 IMPLEMENT
 void *
-Jdb_kobject_name::operator new (size_t) throw()
+Jdb_kobject_name::operator new (size_t) noexcept
 {
   Jdb_kobject_name *n = _names;
   while (1)
@@ -76,7 +76,7 @@ Jdb_kobject_name::operator new (size_t) throw()
 	  auto g = lock_guard(allocator_lock);
 	  if (!*o)
 	    {
-	      *o = (void*)10;
+	      *o = reinterpret_cast<void*>(10);
 	      return n;
 	    }
 	}
@@ -202,7 +202,8 @@ PUBLIC static FIASCO_INIT
 void
 Jdb_kobject_name::init()
 {
-  _names = (Jdb_kobject_name*)Kmem_alloc::allocator()->alloc(Bytes(Name_buffer_size));
+  _names = static_cast<Jdb_kobject_name*>(
+             Kmem_alloc::allocator()->alloc(Bytes(Name_buffer_size)));
   if (!_names)
     panic("No memory for thread names");
 

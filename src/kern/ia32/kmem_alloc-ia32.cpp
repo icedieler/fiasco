@@ -1,3 +1,13 @@
+INTERFACE [ia32,ux,amd64]:
+
+#include "types.h"
+
+EXTENSION class Kmem_alloc
+{
+public:
+  static Address tss_mem_pm;
+};
+
 IMPLEMENTATION [ia32,ux,amd64]:
 
 // base_init() puts those Mem_region_map's on the stack which is slightly
@@ -7,51 +17,71 @@ IMPLEMENTATION [ia32,ux,amd64]:
 #include <cstdio>
 
 #include "kip.h"
-#include "koptions.h"
 #include "mem_region.h"
+#include "minmax.h"
 #include "panic.h"
 #include "types.h"
+#include "paging_bits.h"
 
-PUBLIC static inline
-Phys_mem_addr::Value
-Kmem_alloc::to_phys(void *v)
+Address Kmem_alloc::tss_mem_pm;
+
+/**
+ * Number of memory descriptor fixups.
+ *
+ * Since we allocate the freemap and the TSSs, we might potentially need
+ * two fixups.
+ *
+ * \return Upper bound of the number of memory descriptor fixups that are
+ *         needed for a successful boot.
+ */
+IMPLEMENT_OVERRIDE static inline ALWAYS_INLINE constexpr
+size_t
+Kmem_alloc::nr_fixups()
 {
-  return Mem_layout::pmem_to_phys(v);
+  return 2;
 }
 
+/**
+ * Walk through all KIP memory regions of conventional memory minus the
+ * reserved memory and find one or more regions suitable for the kernel memory.
+ *
+ * Start at the last region of `map` which is guaranteed to have the highest
+ * start address. All regions used for kernel memory including the gaps between
+ * them have to fit into Mem_layout::Physmem_max_size because the allocator
+ * works on a single memory area with a dedicated start address (a()->init()).
+ * It is likely that only a part of the memory region with the lowest start
+ * address is used (see `base` below).
+ *
+ * The kernel memory regions are added to the KIP as `Kernel_tmp`. Later, in
+ * Kmem_alloc(), these regions are added as kernel memory (a()->add_mem()) and
+ * marked as "Reserved".
+ *
+ * The kernel memory includes the buddy freemap (see a()->setup_free_map()).
+ */
 PUBLIC static FIASCO_INIT
 bool
 Kmem_alloc::base_init()
 {
   if (0)
-    printf("Kmem_alloc::base_init(): kip=%p\n", Kip::k());
-  unsigned long available_size = 0;
-  unsigned long requested_size;
+    printf("Kmem_alloc::base_init(): kip=%p\n", (void *)Kip::k());
 
   Mem_region_map<64> map;
+  unsigned long available_size = create_free_map(Kip::k(), &map);
 
-  available_size = create_free_map(Kip::k(), &map);
+  unsigned long alloc_size = determine_kmem_alloc_size(available_size);
 
-  requested_size = Koptions::o()->kmemsize << 10;
-  if (!requested_size)
-    {
-      requested_size = available_size / 100 * Config::kernel_mem_per_cent;
-      if (requested_size > Config::kernel_mem_max)
-	requested_size = Config::kernel_mem_max;
-    }
+  if (alloc_size > Mem_layout::Physmem_max_size)
+    alloc_size = Mem_layout::Physmem_max_size; // maximum mappable memory
 
-  if (requested_size > Mem_layout::Physmem_max_size)
-    requested_size = Mem_layout::Physmem_max_size; // maximum mappable memory
-
-  requested_size =    (requested_size + Config::PAGE_SIZE - 1)
-                   & ~(Config::PAGE_SIZE - 1);
+  static_assert(Mem_layout::Physmem_max_size % Config::PAGE_SIZE == 0,
+                "Physmem_max_size must be page-aligned");
 
   if (0)
     {
-      printf("Kmem_alloc: available_memory=%lu KB requested_size=%lu\n",
-             available_size / 1024, requested_size / 1024);
+      printf("Kmem_alloc: available_memory=%lu KB alloc_size=%lu KB\n",
+             available_size / 1024, alloc_size / 1024);
 
-      printf("Kmem_alloc:: available blocks:\n");
+      printf("Kmem_alloc: available blocks:\n");
       for (unsigned i = 0; i < map.length(); ++i)
         printf("  %2u [%014lx; %014lx)\n", i, map[i].start, map[i].end + 1);
     }
@@ -59,55 +89,63 @@ Kmem_alloc::base_init()
   unsigned long base = 0;
   unsigned long sp_base = 0;
   unsigned long end = map[map.length() - 1].end;
-  unsigned last = map.length();
-  unsigned i;
-  unsigned long size = requested_size;
+  int last = map.length() - 1;
+  int i = last;
 
-  for (i = last; i > 0 && size > 0; --i)
+  while (i >= 0)
     {
-      if (map[i - 1].size() >= size)
-	{ // next block is sufficient
-	  base = map[i - 1].end - size + 1;
-	  sp_base = base & ~(Config::SUPERPAGE_SIZE - 1);
-	  if ((end - sp_base + 1) > (Mem_layout::Physmem_max_size))
-	    {
-	      if (last == i)
-		{ // already a single block, try to align
-		  if (sp_base >= map[i - 1].start)
-		    {
-		      base = sp_base;
-		      end  = sp_base + size - 1;
-                      size = 0;
-		    }
-		  continue;
-		}
-	      else if (last > 1)
-		{ // too much virtual memory, try other blocks
-                  // free last block
-		  size += map[last - 1].size();
-		  end = map[last - 2].end;
-		  --last;
+      if (map[i].size() >= alloc_size)
+        {
+          // next block is sufficient
+          base = map[i].end - alloc_size + 1;
+          sp_base = Super_pg::trunc(base);
+          if (end - sp_base + 1 > Mem_layout::Physmem_max_size)
+            {
+              // Too much virtual memory. This happens typically if there are
+              // multiple blocks from `map` used and there are larger gaps
+              // between the blocks.
+              if (last == i)
+                {
+                  // already a single block: try to align
+                  if (sp_base >= map[i].start)
+                    {
+                      base = sp_base;
+                      end  = sp_base + alloc_size - 1;
+                      alloc_size = 0;
+                    }
+                }
+              else if (last > 0)
+                {
+                  // otherwise: free last block ...
+                  alloc_size += map[last].size();
+                  // ... + try next block
+                  --last;
+                  end = map[last].end;
                   ++i; // try same block again
-                  continue;
-		}
-	    }
-	  else
-	    size = 0;
-	}
+                }
+            }
+          else
+            alloc_size = 0; // done
+        }
       else
-	size -= map[i - 1].size();
+        alloc_size -= map[i].size(); // not done yet
+
+      if (!alloc_size)
+        break;
+
+      --i;
     }
 
-  if (size)
+  if (alloc_size)
     return false;
 
   if (0)
     {
       printf("Kmem_alloc: kernel memory from %014lx to %014lx\n", base, end + 1);
-      printf("Kmem_alloc: blocks %u-%u\n", i, last - 1);
+      printf("Kmem_alloc: blocks %u-%u\n", i, last);
     }
 
-  Kip::k()->add_mem_region(Mem_desc(base, end <= map[i].end ? end : map[i].end,
+  Kip::k()->add_mem_region(Mem_desc(base, min(end, map[i].end),
                                     Mem_desc::Kernel_tmp));
   ++i;
   for (; i < last; ++i)
@@ -115,13 +153,23 @@ Kmem_alloc::base_init()
                                       Mem_desc::Kernel_tmp));
 
   Mem_layout::kphys_base(sp_base);
-  Mem_layout::pmem_size =    (end + 1 - sp_base + Config::SUPERPAGE_SIZE - 1)
-                          & ~(Config::SUPERPAGE_SIZE - 1);
-  assert(Mem_layout::pmem_size <= Config::kernel_mem_max);
+  Mem_layout::pmem_size = Super_pg::round(end + 1 - sp_base);
 
   return true;
 }
 
+/**
+ * Allocate memory for the buddy allocator freemap, TSSs and for the kernel
+ * memory allocator from KIP memory regions marked as `Kernel_tmp`.
+ *
+ * Walk through all `Kernel_tmp` KIP memory regions and look for a suitable
+ * region for the buddy free bitmap and TSSs. Add the remaining parts of the
+ * affected regions and all other `Kernel_tmp` regions as kernel memory.
+ * Finally, change the type of the regions to `Reserved`.
+ *
+ * The amount of kernel memory is decreased by the size of the free bitmap and
+ * the TSSs.
+ */
 IMPLEMENT
 Kmem_alloc::Kmem_alloc()
 {
@@ -129,122 +177,29 @@ Kmem_alloc::Kmem_alloc()
     printf("Kmem_alloc::Kmem_alloc()\n");
 
   unsigned long min_addr = ~0UL;
-  unsigned long max_addr = 0;
+  unsigned long max_addr = 0UL;
 
   for (auto &md: Kip::k()->mem_descs_a())
-    {
-      if (!md.valid() || md.is_virtual())
-        continue;
-
-      if (md.type() != Mem_desc::Kernel_tmp)
-        continue;
-
-      if (min_addr > md.start())
-        min_addr = md.start();
-
-      if (max_addr < md.end())
-        max_addr = md.end();
-    }
+    if (md.type() == Mem_desc::Kernel_tmp)
+      {
+        min_addr = min(min_addr, md.start());
+        max_addr = max(max_addr, md.end());
+      }
 
   if (min_addr >= max_addr)
-    panic("cannot allocate kernel memory, invalid reserved areas\n");
+    panic("Cannot allocate kernel memory: Invalid reserved areas");
+
+  if (0)
+    printf("Kmem_alloc: TSS area needs %zu bytes\n", Mem_layout::Tss_mem_size);
+
+  tss_mem_pm = permanent_alloc(Mem_layout::Tss_mem_size,
+                               Order(Config::PAGE_SHIFT));
 
   unsigned long freemap_size = Alloc::free_map_bytes(min_addr, max_addr);
+  Address min_addr_kern = Mem_layout::phys_to_pmem(min_addr);
 
-  if (0)
-    printf("Kmem_alloc: freemap needs %lu bytes\n", freemap_size);
+  setup_kmem_from_kip_md_tmp(freemap_size, min_addr_kern);
 
-  // mem descriptor where we allocate the freemap
-  Mem_desc *bmmd = nullptr;
-
-  for (auto &md: Kip::k()->mem_descs_a())
-    {
-      if (!md.valid() || md.is_virtual())
-        continue;
-
-      if (md.type() != Mem_desc::Kernel_tmp)
-        continue;
-
-      unsigned long size = md.end() - md.start() + 1;
-      if (size < freemap_size)
-        continue;
-
-      bmmd = &md;
-      break;
-    }
-
-  if (!bmmd)
-    panic("Kmem_alloc: could not allocate buddy freemap\n");
-
-  unsigned long min_addr_kern = Mem_layout::phys_to_pmem(min_addr);
-  unsigned long bm_kern = Mem_layout::phys_to_pmem(bmmd->start());
-
-  if (bm_kern == min_addr_kern)
-    min_addr_kern += freemap_size;
-
-  if (0)
-    printf("Kmem_alloc: allocator base = %014lx\n",
-           Kmem_alloc::Alloc::calc_base_addr(min_addr_kern));
-
-  a->init(min_addr_kern);
-  a->setup_free_map(reinterpret_cast<unsigned long *>(bm_kern), freemap_size);
-
-  unsigned long size = bmmd->end() - bmmd->start() + 1;
-  if (size > freemap_size)
-    {
-      unsigned long sz = size - freemap_size;
-      if (0)
-        printf("  Kmem_alloc: block %014lx(%014lx) size=%lx\n",
-               bm_kern + freemap_size, min_addr_kern, sz);
-      a->add_mem((void*)(bm_kern + freemap_size), sz);
-      _orig_free += sz;
-    }
-
-  bmmd->type(Mem_desc::Reserved);
-
-  for (auto &md: Kip::k()->mem_descs_a())
-    {
-      if (!md.valid() || md.is_virtual())
-        continue;
-
-      if (md.type() != Mem_desc::Kernel_tmp)
-        continue;
-
-      unsigned long s = md.start(), e = md.end();
-      unsigned long s_v = Mem_layout::phys_to_pmem(s);
-
-      if (0)
-        printf("  Kmem_alloc: block %014lx(%014lx) size=%lx\n",
-               s_v, s, e - s + 1);
-      a->add_mem((void *)s_v, e - s + 1);
-      md.type(Mem_desc::Reserved);
-      _orig_free += e - s + 1;
-    }
   if (0)
     printf("Kmem_alloc: construction done\n");
-}
-
-//-----------------------------------------------------------------------------
-IMPLEMENTATION [{ia32,ux,amd64}-debug]:
-
-#include "div32.h"
-
-PUBLIC
-void
-Kmem_alloc::debug_dump()
-{
-  a->dump();
-
-  unsigned long free = a->avail();
-  printf("Used %lu%%, %luKB out of %luKB of Kmem\n",
-         (unsigned long)div32(100ULL * (orig_free() - free), orig_free()),
-	 (orig_free() - free + 1023) / 1024,
-	 (orig_free()        + 1023) / 1024);
-}
-
-PRIVATE inline
-unsigned long
-Kmem_alloc::orig_free()
-{
-  return _orig_free;
 }

@@ -19,7 +19,9 @@ namespace Obj {
   : cxx::int_type_base<unsigned char, Attr>,
     cxx::int_bit_ops<Attr>
   {
-    Attr() = default;
+    Attr()
+    : cxx::int_type_base<unsigned char, Attr>(0) {}
+
     explicit Attr(unsigned char r)
     : cxx::int_type_base<unsigned char, Attr>(r) {}
 
@@ -43,14 +45,15 @@ namespace Obj {
   class Capability
   {
   private:
-    Mword _obj;
+    Mword _obj = 0;
 
   public:
     Capability() = default;
     explicit Capability(Mword v) : _obj(v) {}
-    Kobject_iface *obj() const { return (Kobject_iface *)(_obj & ~3UL); }
+    Kobject_iface *obj() const
+    { return reinterpret_cast<Kobject_iface *>(_obj & ~3UL); }
     void set(Kobject_iface *obj, unsigned char rights)
-    { _obj = Mword(obj) | rights; }
+    { _obj = reinterpret_cast<Mword>(obj) | rights; }
     bool valid() const { return _obj; }
     void invalidate() { _obj = 0; }
     unsigned char rights() const { return _obj & 3; }
@@ -99,7 +102,7 @@ namespace Obj {
   class Entry : public Capability, public Mapping
   {
   public:
-    Entry() {}
+    Entry() : Capability(), Mapping() {}
     explicit Entry(Mword v) : Capability(v) {}
 
     Attr rights() const
@@ -183,7 +186,7 @@ namespace Obj
 
   inline void add_cap_page_dbg_info(void *p, Space *s, Address cap)
   {
-    Dbg_page_info *info = new Dbg_page_info(Virt_addr((Address)p));
+    Dbg_page_info *info = new Dbg_page_info(Virt_addr(p));
 
     if (EXPECT_FALSE(!info))
       {
@@ -198,7 +201,7 @@ namespace Obj
 
   inline void remove_cap_page_dbg_info(void *p)
   {
-    Dbg_page_info *info = Dbg_page_info::table().remove(Virt_addr((Address)p));
+    Dbg_page_info *info = Dbg_page_info::table().remove(Virt_addr(p));
     if (info)
       delete info;
     else

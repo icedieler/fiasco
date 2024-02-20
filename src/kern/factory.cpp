@@ -7,6 +7,7 @@ INTERFACE:
 
 class Factory : public Ram_quota, public Kobject_h<Factory>
 {
+  friend struct Factory_test;
   typedef Slab_cache Self_alloc;
 };
 
@@ -87,11 +88,8 @@ Factory::create_factory(Mword max)
 PUBLIC
 void Factory::operator delete (void *_f)
 {
-  Factory *f = (Factory*)_f;
+  Factory *f = static_cast<Factory*>(_f);
   LOG_TRACE("Factory delete", "fa del", ::current(), Tb_entry_empty, {});
-
-  if (!f->parent())
-    return;
 
   Ram_quota *p = f->parent();
   auto limit = f->limit();
@@ -113,9 +111,7 @@ Factory::map_obj(Kobject_iface *o, Cap_index cap, Task *_c_space,
 
   auto space_lock_guard = lock_guard_dont_lock(c_space->existence_lock);
 
-  // We take the existence_lock for synchronizing maps...
-  // This is kind of coarse grained
-  // try_lock fails if the lock is neither locked nor unlocked
+  // Take the existence_lock for synchronizing maps -- kind of coarse-grained.
   if (!space_lock_guard.check_and_lock(&c_space->existence_lock))
     {
       delete o;
@@ -168,8 +164,9 @@ Factory::kinvoke(L4_obj_ref ref, L4_fpage::Rights rights, Syscall_frame *f,
 
   auto cpu_lock_guard = lock_guard<Lock_guard_inverse_policy>(cpu_lock);
 
-  new_o = Kobject_iface::manufacture((long)access_once(utcb->values + 0),
-                                     this, c_space, f->tag(), utcb, &err);
+  new_o =
+    Kobject_iface::manufacture(static_cast<long>(access_once(utcb->values + 0)),
+                               this, c_space, f->tag(), utcb, &err);
 
   LOG_TRACE("Kobject create", "new", ::current(), Log_entry,
     l->op = utcb->values[0];
@@ -188,6 +185,7 @@ Factory::kinvoke(L4_obj_ref ref, L4_fpage::Rights rights, Syscall_frame *f,
 }
 
 namespace {
+
 static Kobject_iface * FIASCO_FLATTEN
 factory_factory(Ram_quota *q, Space *,
                 L4_msg_tag, Utcb const *u,
@@ -197,11 +195,13 @@ factory_factory(Ram_quota *q, Space *,
   return static_cast<Factory*>(q)->create_factory(u->values[2]);
 }
 
-static inline void __attribute__((constructor)) FIASCO_INIT
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(factory_register_factory)
 register_factory()
 {
   Kobject_iface::set_factory(L4_msg_tag::Label_factory, factory_factory);
 }
+
 }
 
 // ------------------------------------------------------------------------
@@ -236,8 +236,7 @@ Factory::Log_entry::print(String_buffer *buf) const
   { /*   0 */ "gate", "irq", 0, 0, 0, 0, 0, 0,
     /*  -8 */ 0, 0, 0, "task", "thread", 0, 0, "factory",
     /* -16 */ "vm", "dmaspace", "irqsender", 0, "sem" };
-  char const *_op = -op < (int)(sizeof(ops) / sizeof(ops[0]))
-    ? ops[-op] : "invalid op";
+  char const *_op = -op < int{cxx::size(ops)} ? ops[-op] : "invalid op";
   if (!_op)
     _op = "(nan)";
 

@@ -2,6 +2,8 @@ INTERFACE [ia32 || ux || amd64]:
 
 EXTENSION class Mem_space
 {
+  friend class Mem_space_test;
+
 public:
   typedef Pdir Dir_type;
 
@@ -265,19 +267,6 @@ Mem_space::virt_to_phys(Address virt) const
   return dir()->virt_to_phys(virt);
 }
 
-/**
- * Simple page-table lookup.
- *
- * @param virt Virtual address.  This address does not need to be page-aligned.
- * @return Physical address corresponding to a.
- */
-PUBLIC inline NEEDS ["mem_layout.h"]
-Address
-Mem_space::pmem_to_phys(Address virt) const
-{
-  return Mem_layout::pmem_to_phys(virt);
-}
-
 IMPLEMENT
 bool
 Mem_space::v_lookup(Vaddr virt, Phys_addr *phys,
@@ -339,7 +328,7 @@ Mem_space::dir_shutdown()
 
   // free all unshared page table levels for the kernel space
   _dir->destroy(Virt_addr(Mem_layout::User_max + 1),
-                Virt_addr(~0UL), 0, Pdir::Super_level,
+                Virt_addr(Pdir::Max_addr), 0, Pdir::Super_level,
                 Kmem_alloc::q_allocator(_quota));
 }
 
@@ -609,7 +598,7 @@ Mem_space::regular_tlb_type()
 
 IMPLEMENT inline NEEDS["mem_unit.h"]
 void
-Mem_space::tlb_flush(bool = false)
+Mem_space::tlb_flush_current_cpu()
 {
   if (_current.current() == this)
     Mem_unit::tlb_flush();
@@ -668,7 +657,7 @@ Mem_space::regular_tlb_type()
 
 IMPLEMENT inline NEEDS["mem_unit.h"]
 void
-Mem_space::tlb_flush(bool = false)
+Mem_space::tlb_flush_current_cpu()
 {
   auto asid = c_asid();
   if (asid != Mem_unit::Asid_invalid)

@@ -32,7 +32,7 @@ IMPLEMENTATION [arm]:
 Mem_layout::Pmem_region Mem_layout::_pm_regions[Mem_layout::Max_pmem_regions];
 unsigned Mem_layout::_num_pm_regions;
 
-PUBLIC static
+IMPLEMENT static
 Address
 Mem_layout::phys_to_pmem(Address phys)
 {
@@ -46,7 +46,7 @@ Mem_layout::phys_to_pmem(Address phys)
   return ~0UL;
 }
 
-PUBLIC static
+IMPLEMENT static
 Address
 Mem_layout::pmem_to_phys(Address virt)
 {
@@ -112,5 +112,5 @@ template< typename T >
 T
 Mem_layout::read_special_safe(T const *a)
 {
-  return T(_read_special_safe((Mword const *)a));
+  return T(_read_special_safe(reinterpret_cast<Mword const *>(a)));
 }

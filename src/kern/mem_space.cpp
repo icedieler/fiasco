@@ -67,8 +67,28 @@ public:
   Tlb_type tlb_type() const
   { return _tlb_type; }
 
+  /**
+   * Local TLB flush, i.e. only on the current CPU.
+   *
+   * Flushes all entries of this memory space from the TLB.
+   *
+   * @note Might also affect the TLB on other CPUs, if the platform provides a
+   *       mechanism for global TLB invalidation.
+   */
   FIASCO_SPACE_VIRTUAL
-  void tlb_flush(bool);
+  void tlb_flush_current_cpu();
+
+  /**
+   * TLB flush on all CPUs where the memory space is marked as "active".
+   *
+   * Flushes all entries of this memory space from the TLB.
+   *
+   * @note Depenending on the TLB type and usage of this memory space, and if
+   *       the platform provides no mechanisms for global TLB invalidation, a
+   *       cross-CPU TLB flush can be a very costly operation (might need an
+   *       IPI-coordinated TLB shootdown).
+   */
+  void tlb_flush_all_cpus();
 
   /** Insert a page-table entry, or upgrade an existing entry with new
    *  attributes.
@@ -162,6 +182,16 @@ public:
   /** Return the current memory space of this CPU. */
   static inline Mem_space *current_mem_space(Cpu_number cpu)
   { return _current.cpu(cpu); }
+
+  /**
+   * Translate virtual address located in pmem to physical address.
+   *
+   * @param virt  Virtual address located in pmem.
+   *              This address does not need to be page-aligned.
+   *
+   * @return Physical address corresponding to virt.
+   */
+  Address pmem_to_phys(Address virt) const;
 
 /**
  * Simple page-table lookup.
@@ -307,7 +337,7 @@ public:
    * entry of the memory space is accessed on the current CPU, thus potentially
    * cached in the TLB.
    */
-  static void sync_write_tlb_active_on_cpu();
+  void sync_write_tlb_active_on_cpu();
 
   /**
    * Ensure that all changes to page tables made on the current CPU are visible
@@ -325,7 +355,7 @@ protected:
     if (!_tlb_active_on_cpu.atomic_get_and_set_if_unset(current_cpu()))
       // If the memory space was not already marked as active, we have to
       // execute a synchronization operation.
-      Mem_space::sync_write_tlb_active_on_cpu();
+      sync_write_tlb_active_on_cpu();
   }
 
   /**
@@ -392,6 +422,7 @@ IMPLEMENTATION:
 //
 
 #include "config.h"
+#include "cpu_call.h"
 #include "globals.h"
 #include "l4_types.h"
 #include "kmem_alloc.h"
@@ -505,6 +536,37 @@ Mem_space::switchin_context(Mem_space *from, Switchin_flags flags)
 
       from->tlb_track_space_usage();
     }
+}
+
+IMPLEMENT_DEFAULT inline
+Address
+Mem_space::pmem_to_phys(Address virt) const
+{ return Mem_layout::pmem_to_phys(virt); }
+
+IMPLEMENT inline NEEDS["cpu_call.h"]
+void
+Mem_space::tlb_flush_all_cpus()
+{
+  if (!Mem_space::Need_xcpu_tlb_flush || tlb_type() == Mem_space::Tlb_iommu)
+    {
+      tlb_flush_current_cpu();
+      return;
+    }
+
+  // To prevent a race condition that could potentially lead to the use of
+  // outdated page table entries on other cores, we have to execute a memory
+  // barrier that ensures that our PTE changes are visible to all other cores,
+  // before we access tlb_active_on_cpu(). Otherwise, if the Mem_space gets
+  // active on another core, shortly after we read tlb_active_on_cpu() where it
+  // was reported as non-active, we won't send a TLB flush to the other core,
+  // but it might not yet see our PTE changes.
+  Mem_space::sync_read_tlb_active_on_cpu();
+
+  Cpu_call::cpu_call_many(tlb_active_on_cpu(), [this](Cpu_number)
+    {
+      tlb_flush_current_cpu();
+      return false;
+    }, true);
 }
 
 //----------------------------------------------------------------------------

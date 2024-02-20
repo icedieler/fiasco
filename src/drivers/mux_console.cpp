@@ -11,6 +11,8 @@ INTERFACE:
  */
 class Mux_console : public Console
 {
+  friend struct Console_test;
+
 public:
 
   enum
@@ -175,7 +177,7 @@ Mux_console::getchar_chance()
 {
   for (int i = 0; i < _items; ++i)
     if (   _cons[i] && (_cons[i]->state() & INENABLED)
-        && _cons[i]->char_avail() == 1)
+        && _cons[i]->char_avail() > 0)
       {
         int c = _cons[i]->getchar(false);
         if (c != -1 && _next_getchar == -1)
@@ -192,8 +194,8 @@ Mux_console::char_avail() const
     if (_cons[i] && (_cons[i]->state() & INENABLED))
       {
         int tmp = _cons[i]->char_avail();
-        if (tmp == 1)
-          return 1;
+        if (tmp > 0)
+          return tmp;
         else if (tmp == 0)
           ret = tmp;
       }
@@ -221,9 +223,8 @@ Mux_console::register_console(Console *c, int pos = 0)
   if (pos > _items)
     pos = _items;
 
-  if (pos < _items)
-    for (int i = _items - 1; i >= pos; --i)
-      _cons[i + 1] = _cons[i];
+  for (int i = _items - 1; i >= pos; --i)
+    _cons[i + 1] = _cons[i];
 
   _items++;
   _cons[pos] = c;

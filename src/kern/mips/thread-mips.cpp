@@ -9,6 +9,7 @@ IMPLEMENTATION [mips]:
 #include "trap_state.h"
 #include "processor.h"
 #include "types.h"
+#include "paging_bits.h"
 
 PROTECTED inline
 int
@@ -24,11 +25,11 @@ Thread::cache_op(unsigned op, Address start, Address end)
   jmp_buf pf_recovery;
   if (setjmp(pf_recovery) != 0)
     {
-      recover_jmp_buf(0);
+      clear_recover_jmpbuf();
       return -L4_err::EFault;
     }
 
-  recover_jmp_buf(&pf_recovery);
+  set_recover_jmpbuf(&pf_recovery);
 
   switch (op)
     {
@@ -44,7 +45,7 @@ Thread::cache_op(unsigned op, Address start, Address end)
       break;
     }
 
-  recover_jmp_buf(0);
+  clear_recover_jmpbuf();
   return 0;
 }
 
@@ -112,8 +113,8 @@ Thread::Thread(Ram_quota *q)
   // set a magic value -- we use it later to verify the stack hasn't
   // been overrun
   _magic = magic;
-  _recover_jmpbuf = 0;
   _timeout = 0;
+  clear_recover_jmpbuf();
 
   prepare_switch_to(&user_invoke);
 
@@ -169,14 +170,14 @@ Thread::user_invoke()
   // never returns
 }
 
-IMPLEMENT inline NEEDS["space.h", "types.h", "config.h"]
+IMPLEMENT inline NEEDS["space.h", "types.h", "config.h", "paging_bits.h"]
 bool Thread::handle_sigma0_page_fault(Address pfa)
 {
   return mem_space()
-    ->v_insert(Mem_space::Phys_addr((pfa & Config::SUPERPAGE_MASK)),
-               Virt_addr(pfa & Config::SUPERPAGE_MASK),
+    ->v_insert(Mem_space::Phys_addr(Super_pg::trunc(pfa)),
+               Virt_addr(Super_pg::trunc(pfa)),
                Virt_order(Config::SUPERPAGE_SHIFT) /*mem_space()->largest_page_size()*/,
-               Mem_space::Attr(L4_fpage::Rights::URWX()))
+               Mem_space::Attr::space_local(L4_fpage::Rights::URWX()))
     != Mem_space::Insert_err_nomem;
 }
 
@@ -351,7 +352,7 @@ extern "C" void leave_by_vcpu_upcall()
   c->regs()->r[0] = 0; // reset continuation
   Vcpu_state *vcpu = c->vcpu_state().access();
   vcpu->_regs.s = *nonull_static_cast<Trap_state*>(c->regs());
-  c->vcpu_return_to_kernel(vcpu->_entry_ip, vcpu->_entry_sp, c->vcpu_state().usr().get());
+  c->vcpu_return_to_kernel(vcpu->_entry_ip, vcpu->_sp, c->vcpu_state().usr().get());
 }
 
 PRIVATE static inline

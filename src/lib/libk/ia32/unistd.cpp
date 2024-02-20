@@ -23,6 +23,7 @@ IMPLEMENTATION:
 
 #include "kmem_alloc.h"
 #include "config.h"
+#include "paging_bits.h"
 #include "kernel_console.h"
 
 void 
@@ -43,20 +44,19 @@ int
 close(int fd)
 {
   assert(fd == 6);
-  (void)fd;
+  static_cast<void>(fd);
 
   Kconsole::console()->end_exclusive(Console::GZIP);
 
   return 0;
 }
-  
+
 void *
 sbrk(size_t size)
 {
-  void *ret = Kmem_alloc::allocator()
-    ->alloc(Bytes((size+Config::PAGE_SIZE-1) & ~(Config::PAGE_SIZE-1)));
-  if (ret == 0) 
-    ret = (void*)-1;
+  void *ret = Kmem_alloc::allocator()->alloc(Bytes(Pg::round(size)));
+  if (ret == 0)
+    ret = (void *)-1;
   else
     memset(ret, 0, size);
 
@@ -66,8 +66,7 @@ sbrk(size_t size)
 void 
 sbrk_free(void* buf, size_t size)
 {
-  Kmem_alloc::allocator()
-    ->free(Bytes((size+Config::PAGE_SIZE-1)/Config::PAGE_SIZE), buf);
+  Kmem_alloc::allocator()->free(Bytes(Pg::round(size)), buf);
 }
 
 char *pr_base;

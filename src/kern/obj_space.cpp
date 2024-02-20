@@ -92,7 +92,8 @@ public:
   FIASCO_SPACE_VIRTUAL
   void caps_free();
 
-  Kobject_iface *lookup_local(Cap_index virt, L4_fpage::Rights *rights = 0);
+  Kobject_iface *lookup_local(Cap_index virt, L4_fpage::Rights *rights)
+    __attribute__((nonnull));
 
   inline V_pfn map_max_address() const
   { return obj_map_max_address(); }
@@ -118,7 +119,7 @@ PUBLIC template< typename SPACE >
 static inline
 bool
 Generic_obj_space<SPACE>::is_full_flush(L4_fpage::Rights rights)
-{ return (bool)(rights & L4_fpage::Rights::CR()); }
+{ return static_cast<bool>(rights & L4_fpage::Rights::CR()); }
 
 PUBLIC template< typename SPACE >
 inline

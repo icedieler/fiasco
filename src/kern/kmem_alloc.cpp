@@ -11,6 +11,7 @@ INTERFACE:
 class Buddy_alloc;
 class Mem_region_map_base;
 class Kip;
+class Mem_desc;
 
 template<typename Q> class Kmem_q_alloc;
 
@@ -18,18 +19,41 @@ class Kmem_alloc
 {
   friend class Kmem_alloc_tester;
 
-  Kmem_alloc();
+  Kmem_alloc() FIASCO_INIT;
 
 public:
   typedef Buddy_alloc Alloc;
+
+  Address to_phys(void *v) const;
+
 private:
   typedef Spin_lock<> Lock;
+
+  /**
+   * Start address fixup of a memory descriptor.
+   *
+   * We use this for permanent memory allocation directly from the memory
+   * descriptors. The start address of a memory descriptor needs to be fixed up
+   * temporarily for the purpose of the kernel memory initialization.
+   *
+   * Since the memory descriptor cannot be altered directly, this structure
+   * stores an updated value of the start address of a memory descriptor from
+   * which some memory has been allocated.
+   */
+  struct Fixup
+  {
+    Mem_desc const *md;  /**< Memory descriptor to fixup. */
+    unsigned long start; /**< Fixup start address. */
+  };
+
+  static Fixup _fixups[];
   static Lock lock;
   static Alloc *a;
   static unsigned long _orig_free;
   static Kmem_alloc *_alloc;
-};
 
+  static inline constexpr size_t nr_fixups();
+};
 
 class Kmem_alloc_reaper : public cxx::S_list_item
 {
@@ -75,13 +99,13 @@ private:
   Q *_q;
 };
 
-
 IMPLEMENTATION:
 
 #include <cassert>
 
 #include "atomic.h"
 #include "kip.h"
+#include "koptions.h"
 #include "mem_layout.h"
 #include "mem_region.h"
 #include "buddy_alloc.h"
@@ -89,10 +113,166 @@ IMPLEMENTATION:
 #include "warn.h"
 
 static Kmem_alloc::Alloc _a;
+
+Kmem_alloc::Fixup Kmem_alloc::_fixups[Kmem_alloc::nr_fixups()];
 Kmem_alloc::Alloc *Kmem_alloc::a = &_a;
 unsigned long Kmem_alloc::_orig_free;
 Kmem_alloc::Lock Kmem_alloc::lock;
 Kmem_alloc *Kmem_alloc::_alloc;
+
+/**
+ * Number of memory descriptor fixups.
+ *
+ * By default, we only require a single fixup for the freemap.
+ *
+ * \return Upper bound of the number of memory descriptor fixups that are
+ *         needed for a successful boot.
+ */
+IMPLEMENT_DEFAULT static inline ALWAYS_INLINE constexpr
+size_t
+Kmem_alloc::nr_fixups()
+{
+  return 1;
+}
+
+/**
+ * Allocate physical memory before the buddy allocator initialization.
+ *
+ * This method is used to permanently allocate the physical memory for the buddy
+ * allocator freemap, for the TSSs on x86 and potentially other permanent kernel
+ * structures. Since these structures are never freed, they do not have to
+ * influence the run-time allocation.
+ *
+ * The memory is allocated directly from the memory descriptors which are fixed
+ * up appropriately. If the allocation fails, the method panics.
+ *
+ * \note This method can be called only before the buddy allocator
+ *       initialization.
+ *
+ * \param size       Size of the structure to allocate.
+ * \param alignment  Alignment order of the structure to allocate (log2).
+ *
+ * \return Physical address of the allocated structure.
+ */
+PRIVATE static FIASCO_INIT
+Address
+Kmem_alloc::permanent_alloc(size_t size, Order alignment = Order(0))
+{
+  for (auto &md: Kip::k()->mem_descs_a())
+    {
+      if (md.type() != Mem_desc::Kernel_tmp)
+        continue;
+
+      unsigned long start = fixup_start(md);
+      unsigned long span = fixup_size(md);
+
+      if (span < size)
+        continue;
+
+      unsigned long start_aligned
+        = cxx::ceil_lsb(start, cxx::int_value<Order>(alignment));
+      unsigned long gap = start_aligned - start;
+
+      if (gap >= span)
+        continue;
+
+      if (gap + size > span)
+        continue;
+
+      if (gap + size < span)
+        set_fixup_start(md, start + gap + size);
+      else
+        md.type(Mem_desc::Reserved);
+
+      return start_aligned;
+    }
+
+  panic("Unable to allocate %zu bytes of physical memory", size);
+}
+
+/**
+ * Get memory descriptor start address with a fixup.
+ *
+ * \param md  Memory descriptor.
+ *
+ * \return Memory descriptor start address (potentially fixed up).
+ */
+PRIVATE static FIASCO_INIT
+unsigned long
+Kmem_alloc::fixup_start(Mem_desc const &md)
+{
+  assert(md.type() == Mem_desc::Kernel_tmp);
+
+  /* Look for an existing fixup. */
+  for (unsigned int i = 0; i < nr_fixups(); ++i)
+    if (_fixups[i].md == &md)
+      return _fixups[i].start;
+
+  /* No fixup found, return original memory descriptor start. */
+  return md.start();
+}
+
+/**
+ * Set memory descriptor start address fixup.
+ *
+ * If there is no space to store the memory descriptor fixup, the method
+ * panics.
+ *
+ * \param md     Memory descriptor.
+ * \param start  Fixup value of the start address.
+ */
+PRIVATE static FIASCO_INIT
+void
+Kmem_alloc::set_fixup_start(Mem_desc const &md, unsigned long start)
+{
+  assert(md.type() == Mem_desc::Kernel_tmp);
+
+  /* Look for an existing fixup to update. */
+  for (unsigned int i = 0; i < nr_fixups(); ++i)
+    {
+      if (_fixups[i].md == &md)
+        {
+          _fixups[i].start = start;
+          return;
+        }
+
+      /*
+       * Fixups are never removed. Therefore if we encounter an unused fixup
+       * slot, we can be sure that we have already examined all existing
+       * fixups. We create a new fixup in that case.
+       */
+      if (_fixups[i].md == nullptr)
+        {
+          _fixups[i].md = &md;
+          _fixups[i].start = start;
+          return;
+        }
+    }
+
+  panic("Insufficient number of kernel memory fixup slots");
+}
+
+/**
+ * Get memory descriptor size with a fixup.
+ *
+ * \param md  Memory descriptor.
+ *
+ * \return Memory descriptor size (potentially fixed up).
+ */
+PRIVATE static FIASCO_INIT
+unsigned long
+Kmem_alloc::fixup_size(Mem_desc const &md)
+{
+  assert(md.type() == Mem_desc::Kernel_tmp);
+
+  /* Look for an existing fixup. */
+  for (unsigned int i = 0; i < nr_fixups(); ++i)
+    if (_fixups[i].md == &md)
+      return md.end() - _fixups[i].start + 1;
+
+  /* No fixup found, return original memory descriptor size. */
+  return md.size();
+}
 
 PUBLIC static inline NEEDS[<cassert>]
 Kmem_alloc *
@@ -101,7 +281,6 @@ Kmem_alloc::allocator()
   assert (_alloc /* uninitialized use of Kmem_alloc */);
   return _alloc;
 }
-
 
 PUBLIC template<typename Q> static inline NEEDS[<cassert>]
 Kmem_q_alloc<Q>
@@ -137,7 +316,6 @@ Kmem_alloc::alloc(Order o)
 {
   return alloc(Bytes(1) << o);
 }
-
 
 PUBLIC inline //NEEDS [Kmem_alloc::free]
 void
@@ -184,7 +362,7 @@ Kmem_alloc::alloc(Bytes size)
     }
 
   if (EXPECT_FALSE(!ret))
-    WARNX(Error, "Out of memory requesting 0x%lx bytes)\n",
+    WARNX(Error, "Out of memory requesting 0x%lx bytes!\n",
           cxx::int_value<Bytes>(size));
 
   return ret;
@@ -200,7 +378,27 @@ Kmem_alloc::free(Bytes size, void *page)
   a->free(page, sz);
 }
 
+IMPLEMENT_DEFAULT static inline NEEDS["mem_layout.h"]
+Address
+Kmem_alloc::to_phys(void *v) const
+{
+  return Mem_layout::pmem_to_phys(v);
+}
 
+/**
+ * Create map entries for all regions which could be used for kernel memory.
+ *
+ * This is actually the difference quantity of the conventional memory and all
+ * unusable memory regions.
+ *
+ * \param kip        The KIP.
+ * \param[out] map   The map containing the difference quantity of conventional
+ *                   memory and unusable memory regions.
+ * \param alignment  The required kernel memory alignment.
+ * \returns  The amount of detected conventional memory in bytes. The amount of
+ *           actually usable memory is smaller if any unusable region overlaps
+ *           conventional memory.
+ */
 PRIVATE static FIASCO_INIT
 unsigned long
 Kmem_alloc::create_free_map(Kip const *kip, Mem_region_map_base *map,
@@ -253,6 +451,69 @@ Kmem_alloc::create_free_map(Kip const *kip, Mem_region_map_base *map,
   return available_size;
 }
 
+PRIVATE static FIASCO_INIT
+unsigned long
+Kmem_alloc::determine_kmem_alloc_size(unsigned long available_size,
+                                      unsigned long alignment = Config::PAGE_SIZE)
+{
+  // sanity check whether the KIP has been filled out, number is arbitrary
+  if (available_size < 1 << 18)
+    panic("Kmem_alloc: No kernel memory available (%ld)\n", available_size);
+
+  unsigned long alloc_size = Koptions::o()->kmemsize << 10;
+  if (!alloc_size)
+    alloc_size = Config::kmem_size(available_size);
+
+  alloc_size = (alloc_size + alignment - 1) & ~(alignment - 1);
+
+  printf("Reserved %lu MiB as kernel memory.\n", alloc_size >> 20);
+  return alloc_size;
+}
+
+PRIVATE static FIASCO_INIT
+void
+Kmem_alloc::setup_kmem_from_kip_md_tmp(unsigned long freemap_size,
+                                       Address min_addr_kern)
+{
+  if (0)
+    printf("Kmem_alloc: buddy freemap needs %lu bytes\n", freemap_size);
+
+  Address freemap_addr = permanent_alloc(freemap_size);
+  Address freemap_addr_kern = Mem_layout::phys_to_pmem(freemap_addr);
+
+  // Strictly speaking this is not necessary but it also doesn't make sense to
+  // initialize the lower boundary of the kernel memory at the buddy freemap.
+  if (min_addr_kern == freemap_addr_kern)
+    min_addr_kern += freemap_size;
+
+  if (0)
+    printf("Kmem_alloc: allocator base = %014lx\n",
+           Kmem_alloc::Alloc::calc_base_addr(min_addr_kern));
+
+  a->init(min_addr_kern);
+  a->setup_free_map(reinterpret_cast<unsigned long *>(freemap_addr_kern),
+                    freemap_size);
+
+  // Add all KIP memory regions marked as "Kernel_tmp" to kernel memory.
+  for (auto &md: Kip::k()->mem_descs_a())
+    {
+      if (md.type() != Mem_desc::Kernel_tmp)
+        continue;
+
+      unsigned long start = fixup_start(md);
+      unsigned long size = fixup_size(md);
+      Address kern = Mem_layout::phys_to_pmem(start);
+
+      if (0)
+        printf("  Kmem_alloc: block %014lx(%014lx) size=%lx\n",
+               kern, start, size);
+
+      a->add_mem(reinterpret_cast<void *>(kern), size);
+      md.type(Mem_desc::Reserved);
+      _orig_free += size;
+    }
+}
+
 PUBLIC template< typename Q >
 inline
 void *
@@ -291,9 +552,9 @@ Kmem_alloc::q_alloc(Q *quota, Bytes size)
 PUBLIC inline NEEDS["mem_layout.h"]
 void Kmem_alloc::free_phys(Order o, Address p)
 {
-  void *va = (void*)Mem_layout::phys_to_pmem(p);
-  if ((unsigned long)va != ~0UL)
-    free(o, va);
+  Address va = Mem_layout::phys_to_pmem(p);
+  if (va != ~0UL)
+    free(o, reinterpret_cast<void *>(va));
 }
 
 PUBLIC template< typename Q >
@@ -344,4 +605,19 @@ Kmem_alloc_reaper::morecore(bool desperate = false)
     freed += reaper->_reap(desperate);
 
   return freed;
+}
+
+//----------------------------------------------------------------------------
+IMPLEMENTATION [debug]:
+
+PUBLIC
+void
+Kmem_alloc::debug_dump()
+{
+  a->dump();
+
+  unsigned long free = a->avail();
+  printf("Used %llu%%, %luKiB out of %luKiB of Kmem\n",
+         100ULL * (_orig_free - free) / _orig_free,
+         (_orig_free - free + 1023) / 1024, (_orig_free + 1023) / 1024);
 }

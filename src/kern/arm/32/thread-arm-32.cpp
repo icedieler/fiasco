@@ -22,7 +22,20 @@ Thread::mangle_kernel_lib_page_fault(Mword pc, Mword error_code)
 IMPLEMENT inline NEEDS[Thread::exception_triggered]
 Mword
 Thread::user_ip() const
-{ return exception_triggered() ? _exc_cont.ip() : regs()->ip(); }
+{
+  Mword ret;
+
+  if (exception_triggered())
+    ret = _exc_cont.ip();
+  else
+    {
+      ret = regs()->ip();
+      if (regs()->psr & Proc::Status_thumb)
+        ret |= 1U;
+    }
+
+  return ret;
+}
 
 IMPLEMENT inline NEEDS[Thread::exception_triggered]
 void
@@ -33,7 +46,11 @@ Thread::user_ip(Mword ip)
   else
     {
       Entry_frame *r = regs();
-      r->ip(ip);
+      r->ip(ip & ~1UL);
+      if (ip & 1U)
+        r->psr |= Proc::Status_thumb;
+      else
+        r->psr &= ~static_cast<Mword>(Proc::Status_thumb);
     }
 }
 
@@ -60,7 +77,7 @@ Thread::copy_utcb_to_ts(L4_msg_tag tag, Thread *snd, Thread *rcv,
   if (EXPECT_FALSE(tag.words() < (sizeof(Trex) / sizeof(Mword))))
     return true;
 
-  Trap_state *ts = (Trap_state*)rcv->_utcb_handler;
+  Trap_state *ts = static_cast<Trap_state*>(rcv->_utcb_handler);
   Utcb *snd_utcb = snd->utcb().access();
   Trex const *sregs = reinterpret_cast<Trex const *>(snd_utcb->values);
 
@@ -97,7 +114,7 @@ bool FIASCO_WARN_RESULT
 Thread::copy_ts_to_utcb(L4_msg_tag, Thread *snd, Thread *rcv,
                         L4_fpage::Rights rights)
 {
-  Trap_state *ts = (Trap_state*)snd->_utcb_handler;
+  Trap_state *ts = static_cast<Trap_state*>(snd->_utcb_handler);
 
   {
     auto guard = lock_guard(cpu_lock);
@@ -109,7 +126,8 @@ Thread::copy_ts_to_utcb(L4_msg_tag, Thread *snd, Thread *rcv,
     // copy pf_address, esr, r0..r12
     Mem::memcpy_mwords(rcv_utcb->values, ts, 15);
     Continuation::User_return_frame *d
-      = reinterpret_cast<Continuation::User_return_frame *>((char*)&rcv_utcb->values[15]);
+      = reinterpret_cast<Continuation::User_return_frame *>(
+          &rcv_utcb->values[15]);
 
     snd->_exc_cont.get(d, ts);
 
@@ -189,10 +207,55 @@ Thread::is_debug_exception(Arm_esr esr)
   return is_fsr_exception(esr) && esr.pf_fsc() == Hsr_fsc_debug;
 }
 
-PUBLIC static inline NEEDS[Thread::call_nested_trap_handler]
+PUBLIC inline NEEDS[Thread::call_nested_trap_handler]
 void
 Thread::handle_debug_exception(Trap_state *ts)
 {
+  if (PF::is_usermode_error(ts->error_code))
+    {
+      // Convert DBGDSCR.MOE to corresponding AArch64 Trap_state::esr syndromes
+      // so that it is accessible to user space.
+      Mword v;
+      asm volatile("mrc p14, 0, %0, c0, c1, 0" : "=r" (v)); // DBGDSCR
+      Mword moe = (v >> 2) & 0xf;
+      Arm_esr esr = ts->esr;
+      switch (moe)
+        {
+        case 1: // Breakpoint debug event
+          ts->esr = Arm_esr::make_breakpoint();
+          break;
+
+        case 2: // Asynchronous watchpoint debug event
+        case 10: // Synchronous watchpoint debug event
+          ts->esr = Arm_esr::make_watchpoint(esr.pf_cache_maint(),
+                                             esr.pf_write());
+          break;
+
+        case 3: // BKPT instruction debug event
+          // Unfortunaltely the immediate of the bkpt instruction is not
+          // available. We always report it as zero.
+          ts->esr = Arm_esr::make_bkpt_insn(esr.il());
+          break;
+
+        case 5: // Vector catch debug event
+          ts->esr = Arm_esr::make_vector_catch_aarch32();
+          break;
+
+        default:
+          // Reserved or should only be triggered by an external debugger.
+          ts->esr = esr;
+          call_nested_trap_handler(ts);
+          return;
+        }
+
+      if (send_exception(ts))
+        return;
+
+      // Restore original esr so that JDB sees the truth.
+      ts->esr = esr;
+    }
+
+  // Debug exception from within the kernel or if exception IPC failed.
   call_nested_trap_handler(ts);
 }
 
@@ -204,12 +267,38 @@ Thread::check_and_handle_linux_cache_api(Trap_state *ts)
     {
       if (ts->r[2] == 0)
         Mem_op::arm_mem_cache_maint(Mem_op::Op_cache_coherent,
-                                    (void *)ts->r[0], (void *)ts->r[1]);
+                                    reinterpret_cast<void *>(ts->r[0]),
+                                    reinterpret_cast<void *>(ts->r[1]));
       ts->r[0] = 0;
       return true;
     }
   else
     return false;
+}
+
+IMPLEMENT_OVERRIDE inline
+bool
+Thread::check_and_handle_mem_op_fault(Mword error_code, Return_frame *ret_frame)
+{
+  // cache operations we carry out for user space might cause PFs, we just
+  // ignore those
+  if (EXPECT_FALSE(!PF::is_usermode_error(error_code))
+      && EXPECT_FALSE(is_ignore_mem_op_in_progress()))
+    {
+      set_kernel_mem_op_hit();
+      ret_frame->pc += 4;
+      return true;
+    }
+  else
+    return false;
+}
+
+extern "C"
+Vcpu_state *
+current_prepare_vcpu_return_to_kernel(Thread *c, Vcpu_state *vcpu)
+{
+  c->prepare_vcpu_return_to_kernel(vcpu->_entry_ip, vcpu->_sp);
+  return c->vcpu_state().usr().get();
 }
 
 //---------------------------------------------------------------------------
@@ -247,27 +336,6 @@ Thread::is_debug_exception_fsr(Mword error_code)
 //-----------------------------------------------------------------------------
 IMPLEMENTATION [arm && 32bit && fpu]:
 
-PUBLIC static inline
-bool
-Thread::check_for_kernel_mem_access_pf(Trap_state *ts, Thread *t)
-{
-  if (EXPECT_FALSE(t->is_kernel_mem_op_hit_and_clear()))
-    {
-      Mword pc = t->exception_triggered() ? t->_exc_cont.ip() : ts->pc;
-
-      pc -= (ts->psr & Proc::Status_thumb) ? 2 : 4;
-
-      if (t->exception_triggered())
-        t->_exc_cont.ip(pc);
-      else
-        ts->pc = pc;
-
-      return true;
-    }
-
-  return false;
-}
-
 IMPLEMENT_OVERRIDE inline
 bool
 Thread::check_and_handle_coproc_faults(Trap_state *ts)
@@ -279,20 +347,23 @@ Thread::check_and_handle_coproc_faults(Trap_state *ts)
 
   if (ts->psr & Proc::Status_thumb)
     {
-      Unsigned16 v = Thread::peek_user((Unsigned16 *)(ts->pc - 2), this);
+      Unsigned16 v =
+        Thread::peek_user(reinterpret_cast<Unsigned16 *>(ts->pc), this);
 
-      if (EXPECT_FALSE(Thread::check_for_kernel_mem_access_pf(ts, this)))
+      if (EXPECT_FALSE(is_kernel_mem_op_hit_and_clear()))
         return true;
 
       if ((v >> 11) <= 0x1c)
         return false;
 
-      opcode = (v << 16) | Thread::peek_user((Unsigned16 *)ts->pc, this);
+      opcode =
+        (v << 16)
+        | Thread::peek_user(reinterpret_cast<Unsigned16 *>(ts->pc + 2), this);
     }
   else
-    opcode = Thread::peek_user((Unsigned32 *)(ts->pc - 4), this);
+    opcode = Thread::peek_user(reinterpret_cast<Unsigned32 *>(ts->pc), this);
 
-  if (EXPECT_FALSE(Thread::check_for_kernel_mem_access_pf(ts, this)))
+  if (EXPECT_FALSE(is_kernel_mem_op_hit_and_clear()))
     return true;
 
   if (ts->psr & Proc::Status_thumb)
@@ -321,8 +392,7 @@ Thread::handle_fpu_trap(Unsigned32 opcode, Trap_state *ts)
   if (!condition_valid(opcode >> 28, ts->psr))
     {
       // FPU insns are 32bit, even for thumb
-      if (ts->psr & Proc::Status_thumb)
-        ts->pc += 2;
+      ts->pc += 4;
       return true;
     }
 
@@ -337,7 +407,6 @@ Thread::handle_fpu_trap(Unsigned32 opcode, Trap_state *ts)
     {
       if (Fpu::is_emu_insn(opcode))
         return Fpu::emulate_insns(opcode, ts);
-      ts->pc -= (ts->psr & Proc::Status_thumb) ? 2 : 4;
       return true;
     }
   else
@@ -356,32 +425,47 @@ IMPLEMENTATION [arm && 32bit && arm_esr_traps]:
 
 PRIVATE inline
 void
+Thread::do_syscall(Unsigned32 r5)
+{
+  typedef void Syscall(void);
+  extern Syscall *sys_call_table[];
+  sys_call_table[r5]();
+}
+
+PRIVATE inline
+void
 Thread::handle_svc(Trap_state *ts)
 {
-  extern void slowtrap_entry(Trap_state *ts) asm ("slowtrap_entry");
-  Unsigned32 pc = ts->pc;
-  if (!is_syscall_pc(pc))
+  Unsigned32 r5 = ts->r[5];
+  if (EXPECT_FALSE(r5 > 1))
     {
+      // Adjust PC to point to trapped bogus syscall instruction.
+      ts->pc -= Arm_esr(ts->error_code).il() ? 4 : 2;
       slowtrap_entry(ts);
       return;
     }
-  ts->pc = get_lr_for_mode(ts);
+
   Mword state = this->state();
   state_del(Thread_cancel);
   if (state & (Thread_vcpu_user | Thread_alien))
     {
       if (state & Thread_dis_alien)
-        state_del_dirty(Thread_dis_alien);
-      else
         {
-          slowtrap_entry(ts);
-          return;
+          state_del_dirty(Thread_dis_alien);
+          do_syscall(r5);
+          ts->error_code |= 0x40; // see ivt.S alien_syscall
         }
+      else
+        // Adjust PC to be on SVC/HVC insn so that the instruction can either
+        // be restarted (alien thread before syscall) or can be examined in
+        // vCPU entry handler.
+        ts->pc -= Arm_esr(ts->error_code).il() ? 4 : 2;
+
+      slowtrap_entry(ts);
+      return;
     }
 
-  typedef void Syscall(void);
-  extern Syscall *sys_call_table[];
-  sys_call_table[(-pc) / 4]();
+  do_syscall(r5);
 }
 
 //-----------------------------------------------------------------------------
@@ -403,4 +487,17 @@ Thread::pagein_tcb_request(Return_frame *regs)
       return true;
     }
   return false;
+}
+
+//-----------------------------------------------------------------------------
+IMPLEMENTATION [arm && 32bit && !cpu_virt]:
+
+PUBLIC static inline template<typename T>
+T Thread::peek_user(T const *adr, Context *c)
+{
+  T v;
+  c->set_ignore_mem_op_in_progress(true);
+  v = *adr;
+  c->set_ignore_mem_op_in_progress(false);
+  return v;
 }

@@ -1,44 +1,23 @@
-INTERFACE [mips32]:
+IMPLEMENTATION [mips32]:
 
-#include "mem_layout.h"
-#include "paging.h"
+IMPLEMENT inline
+bool
+Kmem::is_kmem_page_fault(Mword pfa, Mword /*cause*/)
+{ return pfa >= 0x80000000; }
 
-class Kmem : public Mem_layout
-{
-public:
-  static bool is_kmem_page_fault(Mword pfa, Mword /*cause*/)
-  { return pfa >= 0x80000000; }
+IMPLEMENTATION [mips64]:
 
-  static bool is_io_bitmap_page_fault(Mword)
-  { return false; }
-
-  // currently a dummy the kernel runs unpaged
-  static Pdir *const kdir;
-};
-
-INTERFACE [mips64]:
-
-#include "mem_layout.h"
-#include "paging.h"
-
-class Kmem : public Mem_layout
-{
-public:
-  static bool is_kmem_page_fault(Mword pfa, Mword /*cause*/)
-  { return pfa >= 0x8000000000000000; }
-
-  static bool is_io_bitmap_page_fault(Mword)
-  { return false; }
-
-  // currently a dummy the kernel runs unpaged
-  static Pdir *const kdir;
-};
+IMPLEMENT inline
+bool
+Kmem::is_kmem_page_fault(Mword pfa, Mword /*cause*/)
+{ return pfa >= 0x8000000000000000; }
 
 IMPLEMENTATION [mips]:
 
 #include <cassert>
 
-Pdir *const Kmem::kdir = 0;
+// currently a dummy, the kernel runs unpaged
+Kpdir *Kmem::kdir = nullptr;
 
 PUBLIC static
 Address

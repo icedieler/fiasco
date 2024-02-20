@@ -10,10 +10,67 @@ Thread::arch_check_vcpu_state(bool ext)
   return 0;
 }
 
+IMPLEMENT inline
+Mword
+Thread::user_flags() const
+{
+  return ((_hyp.hcr & Cpu::Hcr_tge) ? Exr_arm_set_el_el0
+                                    : Exr_arm_set_el_el1);
+}
+
+IMPLEMENT_OVERRIDE
+bool
+Thread::ex_regs_arch(Mword ops)
+{
+  if (ops & Exr_arm_unassigned)
+    return false;
+
+  bool tge;
+
+  switch (ops & Exr_arm_set_el_mask)
+    {
+    case Exr_arm_set_el_keep:
+      return true;
+    case Exr_arm_set_el_el0:
+      tge = true;
+      break;
+    case Exr_arm_set_el_el1:
+      tge = false;
+      break;
+    default:
+      return false;
+    }
+
+  // No change of exception level allowed after extended vCPU was enabled. The
+  // state is then controlled by the corresponding
+  // Hyp_vm_state.{host_regs,guest_regs} fields instead!
+  if (state() & Thread_ext_vcpu_enabled)
+    return false;
+
+  if (tge)
+    {
+      regs()->psr &= ~Proc::Status_mode_mask;
+      regs()->psr |= Proc::Status_mode_user_el0;
+      _hyp.hcr |= Cpu::Hcr_tge;
+    }
+  else
+    {
+      regs()->psr &= ~Proc::Status_mode_mask;
+      regs()->psr |= Proc::Status_mode_user_el1;
+      _hyp.hcr &= ~Cpu::Hcr_tge;
+    }
+
+  if (current() == this)
+    Cpu::hcr(_hyp.hcr);
+
+  return true;
+}
+
 
 IMPLEMENTATION [arm && 32bit && cpu_virt]:
 
 #include "slowtrap_entry.h"
+#include "infinite_loop.h"
 
 IMPLEMENT_OVERRIDE
 void
@@ -24,8 +81,7 @@ Thread::arch_init_vcpu_state(Vcpu_state *vcpu_state, bool ext)
   if (!ext || (state() & Thread_ext_vcpu_enabled))
     return;
 
-  Vm_state::Vm_info *info
-    = reinterpret_cast<Vm_state::Vm_info *>((char *)vcpu_state + 0x200);
+  Vm_state::Vm_info *info = offset_cast<Vm_state::Vm_info *>(vcpu_state, 0x200);
 
   info->setup();
 
@@ -41,16 +97,15 @@ Thread::arch_init_vcpu_state(Vcpu_state *vcpu_state, bool ext)
   v->amair1 = 0;
   v->cntvoff = 0;
 
-  v->guest_regs.hcr = Cpu::Hcr_tge | Cpu::Hcr_must_set_bits;
+  v->guest_regs.hcr = Cpu::Hcr_tge | Cpu::Hcr_must_set_bits | Cpu::Hcr_dc;
   v->guest_regs.sctlr = 0;
 
-  v->host_regs.hcr = Cpu::Hcr_host_bits;
+  v->host_regs.hcr = Cpu::Hcr_host_bits | (_hyp.hcr & Cpu::Hcr_tge);
 
   Gic_h_global::gic->setup_state(&v->gic);
 
   if (current() == this)
     {
-      asm volatile ("mcr p15, 4, %0, c1, c1, 0" : : "r"(Cpu::Hcr_host_bits));
       asm volatile ("mcr p15, 0, %0, c1, c0, 0" : : "r"(v->sctlr));
       asm volatile ("mcr p15, 4, %0, c1, c1, 3" : : "r"(Cpu::Hstr_vm)); // HSTR
     }
@@ -63,52 +118,14 @@ Thread::arch_init_vcpu_state(Vcpu_state *vcpu_state, bool ext)
   asm ("mrc p15, 0, %0, c0, c0, 0" : "=r" (v->vpidr));
 }
 
-PUBLIC static inline template<typename T>
-T
-Thread::peek_user(T const *adr, Context *c)
-{
-  Address pa;
-  asm ("mcr p15, 0, %1, c7, c8, 6 \n"
-       "mrc p15, 0, %0, c7, c4, 0 \n"
-       : "=r" (pa) : "r"(adr) );
-  if (EXPECT_TRUE(!(pa & 1)))
-    return *reinterpret_cast<T const *>(cxx::mask_lsb(pa, 12)
-                                        | cxx::get_lsb((Address)adr, 12));
+//-----------------------------------------------------------------------------
+IMPLEMENTATION [arm && 32bit && !debug]:
 
-  c->set_kernel_mem_op_hit();
-  return T(~0);
-}
-
-PRIVATE static inline
-Mword
-Thread::get_lr_for_mode(Return_frame const *rf)
-{
-  Mword ret;
-  switch (rf->psr & 0x1f)
-    {
-    case Proc::PSR_m_usr:
-    case Proc::PSR_m_sys:
-      return rf->ulr;
-    case Proc::PSR_m_irq:
-      asm ("mrs %0, lr_irq" : "=r" (ret)); return ret;
-    case Proc::PSR_m_fiq:
-      asm ("mrs %0, lr_fiq" : "=r" (ret)); return ret;
-    case Proc::PSR_m_abt:
-      asm ("mrs %0, lr_abt" : "=r" (ret)); return ret;
-    case Proc::PSR_m_svc:
-      asm ("mrs %0, lr_svc" : "=r" (ret)); return ret;
-    case Proc::PSR_m_und:
-      asm ("mrs %0, lr_und" : "=r" (ret)); return ret;
-    default:
-      assert(false); // wrong processor mode
-      return ~0UL;
-    }
-}
+#include "infinite_loop.h"
 
 extern "C" void hyp_mode_fault(Mword abort_type, Trap_state *ts)
 {
   Mword v;
-
   Mword hsr;
   asm volatile("mrc p15, 4, %0, c5, c2, 0" : "=r" (hsr));
 
@@ -138,14 +155,55 @@ extern "C" void hyp_mode_fault(Mword abort_type, Trap_state *ts)
       break;
     default:
       printf("KERNEL%d: Unknown hyp fault at %lx hsr=%lx\n",
-             cxx::int_value<Cpu_number>(current_cpu()),
-             ts->ip(), hsr);
+             cxx::int_value<Cpu_number>(current_cpu()), ts->ip(), hsr);
+      break;
+    };
+
+  ts->dump();
+
+  printf("In-kernel fault -- halting!\n");
+  L4::infinite_loop();
+}
+
+//-----------------------------------------------------------------------------
+IMPLEMENTATION [arm && 32bit && debug]:
+
+#include "infinite_loop.h"
+
+PUBLIC static inline NEEDS[Thread::call_nested_trap_handler]
+void
+Thread::handle_hyp_mode_fault(Trap_state *ts)
+{
+  call_nested_trap_handler(ts);
+}
+
+extern "C" void hyp_mode_fault(Mword abort_type, Trap_state *ts)
+{
+  Mword hsr;
+  asm volatile("mrc p15, 4, %0, c5, c2, 0" : "=r" (hsr));
+
+  switch (abort_type)
+    {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+      Thread::handle_hyp_mode_fault(ts);
+      return;
+
+    default:
+      // Cannot happen -- see Assembler stub.
+      printf("KERNEL%d: Unknown hyp fault at %lx hsr=%lx\n",
+             cxx::int_value<Cpu_number>(current_cpu()), ts->ip(), hsr);
       break;
     };
 
   ts->dump();
 
   kdb_ke("In-kernel fault");
+
+  printf("Return from debugger -- halting!\n");
+  L4::infinite_loop();
 }
 
 //-----------------------------------------------------------------------------
@@ -168,9 +226,6 @@ Thread::handle_fpu_trap(Trap_state *ts)
 
   if (current_thread()->switchin_fpu())
     return true;
-
-  // emulate the ARM exception entry PC
-  ts->pc += ts->psr & Proc::Status_thumb ? 2 : 4;
 
   return false;
 }
@@ -201,7 +256,8 @@ Thread::vcpu_vgic_upcall(unsigned virq)
   Vcpu_state *vcpu = vcpu_state().access();
   assert (vcpu_exceptions_enabled(vcpu));
 
-  Trap_state *ts = static_cast<Trap_state *>((Return_frame *)regs());
+  Trap_state *ts =
+    static_cast<Trap_state *>(static_cast<Return_frame *>(regs()));
 
   // Before entering kernel mode to have original fpu state before
   // enabling FPU
@@ -322,13 +378,6 @@ Arm_vtimer_ppi::mask()
                "mcr p15, 0, %0, c14, c3, 1\n" : "=r" (v));
 }
 
-PRIVATE static inline
-bool
-Thread::is_syscall_pc(Address pc)
-{
-  return Address(-0x0c) <= pc && pc <= Address(-0x08);
-}
-
 PRIVATE static inline NEEDS[Thread::invalid_pfa]
 Address
 Thread::get_fault_pfa(Arm_esr hsr, bool insn_abt, bool ext_vcpu)
@@ -386,6 +435,24 @@ Thread::get_esr()
   return hsr;
 }
 
+
+PUBLIC static inline template<typename T>
+T
+Thread::peek_user(T const *adr, Context *c)
+{
+  Address pa;
+  asm ("mcr p15, 0, %1, c7, c8, 6 \n"
+       "mrc p15, 0, %0, c7, c4, 0 \n"
+       : "=r" (pa) : "r"(adr) );
+  if (EXPECT_TRUE(!(pa & 1)))
+    return *reinterpret_cast<T const *>(
+              cxx::mask_lsb(pa, 12)
+              | cxx::get_lsb(reinterpret_cast<Address>(adr), 12));
+
+  c->set_kernel_mem_op_hit();
+  return T(~0);
+}
+
 //-----------------------------------------------------------------------------
 IMPLEMENTATION [arm && 32bit && cpu_virt && arm_v8plus]:
 
@@ -420,8 +487,7 @@ Thread::arch_init_vcpu_state(Vcpu_state *vcpu_state, bool ext)
   if (!ext || (state() & Thread_ext_vcpu_enabled))
     return;
 
-  Vm_state::Vm_info *info
-    = reinterpret_cast<Vm_state::Vm_info *>((char *)vcpu_state + 0x200);
+  Vm_state::Vm_info *info = offset_cast<Vm_state::Vm_info *>(vcpu_state, 0x200);
 
   info->setup();
 
@@ -432,10 +498,10 @@ Thread::arch_init_vcpu_state(Vcpu_state *vcpu_state, bool ext)
   v->amair = 0;
 
   v->cntvoff = 0;
-  v->guest_regs.hcr = Cpu::Hcr_tge;
+  v->guest_regs.hcr = Cpu::Hcr_tge | Cpu::Hcr_must_set_bits | Cpu::Hcr_dc;
   v->guest_regs.sctlr = 0;
 
-  v->host_regs.hcr = Cpu::Hcr_host_bits;
+  v->host_regs.hcr = Cpu::Hcr_host_bits | (_hyp.hcr & Cpu::Hcr_tge);
 
   Gic_h_global::gic->setup_state(&v->gic);
 
@@ -445,7 +511,6 @@ Thread::arch_init_vcpu_state(Vcpu_state *vcpu_state, bool ext)
   if (current() == this)
     {
       asm volatile ("msr SCTLR_EL1, %x0"   : : "r"(v->sctlr));
-      asm volatile ("msr CNTVOFF_EL2, %x0" : : "r"(v->cntvoff));
       asm volatile ("msr HSTR_EL2, %x0" : : "r"(Cpu::Hstr_vm)); // HSTR
     }
 }

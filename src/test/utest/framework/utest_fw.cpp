@@ -509,7 +509,7 @@ Utest_fw::tap_msg(bool success,
            msg ? msg : "");
 
   if (_test_uuid)
-    printf("KUT # Test-uuid: %s\n", _test_uuid);
+    printf("\nKUT # Test-uuid: %s\n\n", _test_uuid);
 }
 
 /**
@@ -644,6 +644,38 @@ Utest_fw::print_eval(char const *eval, A &&val, char const *str) const
   printf("\nKUT # \t%s: ", eval);
   utest_format_print_value(val);
   printf("\t(%s)\n", str);
+}
+
+/**
+ * Print an error message and abort the test if `obj` is null.
+ *
+ * This function shall be used to verify conditions in unit test setup /
+ * cleanup code which are not relevant for the actual test.
+ *
+ * \param obj     Pointer which must be non-null.
+ * \param msg     Message to be printed in case of failure.
+ */
+PUBLIC template <typename T, typename D> static inline
+void
+Utest_fw::chk(cxx::unique_ptr<T, D> const &obj, char const *msg)
+{
+  return chk(obj != nullptr, msg);
+}
+
+/**
+ * Print an error message and abort the test if `obj` is null.
+ *
+ * This function shall be used to verify conditions in unit test setup /
+ * cleanup code which are not relevant for the actual test.
+ *
+ * \param obj     Pointer which must be non-null.
+ * \param msg     Message to be printed in case of failure.
+ */
+PUBLIC template <typename T, typename D> static inline
+void
+Utest_fw::chk(cxx::unique_ptr<T, D> const &obj, Utest_fmt const &msg)
+{
+  return chk(obj != nullptr, msg);
 }
 
 /**
@@ -791,6 +823,28 @@ Utest::next_online_cpu(Cpu_number *cpu)
       return true;
 
   return false;
+}
+
+/**
+ * Return the nth online CPU starting at the first CPU.
+ *
+ * \param n  Number of the online CPU (0 = first, 1 = second, ...)
+ * \return The CPU number of the nth online CPU or Cpu_number::nil if the nth
+ *         online CPU was not found.
+ */
+PUBLIC static inline
+Cpu_number
+Utest::nth_online_cpu(unsigned n)
+{
+  Cpu_number cpu = Cpu_number::first();
+  for (;;)
+    {
+      if (!next_online_cpu(&cpu))
+        return Cpu_number::nil();
+      if (!n--)
+        return cpu;
+      ++cpu;
+    }
 }
 
 /**
@@ -1079,8 +1133,18 @@ Utest::Tick_disabler::Tick_disabler()
 IMPLEMENT
 Utest::Tick_disabler::~Tick_disabler()
 {
-  auto guard = lock_guard(cpu_lock);
-  Timer_tick::enable(current_cpu());
+    {
+      auto guard = lock_guard(cpu_lock);
+      Timer_tick::enable(current_cpu());
+    }
+
+  if (!cpu_lock.test())
+    {
+      // Wait for system clock to be updated once after re-enabling timer tick,
+      // otherwise an immediately following `Utest::wait()` might wait much
+      // shorter than expected.
+      Utest::wait(1);
+    }
 }
 
 /**
@@ -1319,4 +1383,28 @@ Utest::Tick_disabler::timestamp()
   Unsigned64 freq = Generic_timer::Gtimer::frequency();
 
   return (count * 1000000UL) / freq;
+}
+
+//---------------------------------------------------------------------------
+IMPLEMENTATION[riscv]:
+
+/// Tickless operation is supported on RISC-V.
+IMPLEMENT_OVERRIDE static
+bool
+Utest::Tick_disabler::supported()
+{
+  return true;
+}
+
+/**
+ * Get current timestamp in us.
+ *
+ * \return Current timestamp in us.
+ */
+IMPLEMENT_OVERRIDE static
+Unsigned64
+Utest::Tick_disabler::timestamp()
+{
+  Unsigned32 frequency = Kip::k()->platform_info.arch.timebase_frequency;
+  return (Cpu::rdtime() * 1000000ULL) / (frequency);
 }

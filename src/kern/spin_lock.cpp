@@ -3,12 +3,6 @@ INTERFACE:
 #include "cpu_lock.h"
 #include "types.h"
 
-class Spin_lock_base : protected Cpu_lock
-{
-public:
-  enum Lock_init { Unlocked = 0 };
-};
-
 /**
  * \brief Basic spin lock.
  *
@@ -28,8 +22,10 @@ public:
  * after it acquired that same lock.
  */
 template<typename Lock_t = Small_atomic_int>
-class Spin_lock : public Spin_lock_base
+class Spin_lock : protected Cpu_lock
 {
+   Spin_lock(Spin_lock const &) = delete;
+   Spin_lock operator = (Spin_lock const &) = delete;
 };
 
 //--------------------------------------------------------------------------
@@ -39,8 +35,6 @@ EXTENSION class Spin_lock
 {
 public:
   Spin_lock() {}
-  explicit Spin_lock(Lock_init) {}
-  void init() {}
 
   using Cpu_lock::Status;
   using Cpu_lock::test;
@@ -48,7 +42,6 @@ public:
   using Cpu_lock::clear;
   using Cpu_lock::test_and_set;
   using Cpu_lock::set;
-
 };
 
 /**
@@ -59,7 +52,7 @@ class Spin_lock_coloc : public Spin_lock<Mword>
 {
 private:
   enum { Arch_lock = 1 };
-  Mword _lock;
+  Mword _lock = 0;
 };
 
 
@@ -70,8 +63,8 @@ EXTENSION class Spin_lock
 {
 public:
   typedef Mword Status;
-  Spin_lock() {}
-  explicit Spin_lock(Lock_init i) : _lock((i == Unlocked) ? 0 : Arch_lock) {}
+  /// Initialize spin lock in unlocked state.
+  Spin_lock() : _lock(0) {}
 
 protected:
   Lock_t _lock;
@@ -82,31 +75,22 @@ protected:
  */
 template< typename T >
 class Spin_lock_coloc : public Spin_lock<Mword>
-{
-};
+{};
 
 //--------------------------------------------------------------------------
 IMPLEMENTATION:
 
 PUBLIC inline
 template< typename T >
-Spin_lock_coloc<T>::Spin_lock_coloc() {}
-
-PUBLIC inline
-template< typename T >
-Spin_lock_coloc<T>::Spin_lock_coloc(Lock_init i) : Spin_lock<Mword>(i) {}
-
-PUBLIC inline
-template< typename T >
 T
 Spin_lock_coloc<T>::get_unused() const
-{ return (T)(_lock & ~Arch_lock); }
+{ return reinterpret_cast<T>(_lock & ~Arch_lock); }
 
 PUBLIC inline
 template< typename T >
 void
 Spin_lock_coloc<T>::set_unused(T val)
-{ _lock = (_lock & Arch_lock) | (Mword)val; }
+{ _lock = (_lock & Arch_lock) | reinterpret_cast<Mword>(val); }
 
 
 //--------------------------------------------------------------------------
@@ -114,13 +98,6 @@ IMPLEMENTATION [mp]:
 
 #include <cassert>
 #include "mem.h"
-
-PUBLIC template<typename Lock_t> inline
-void
-Spin_lock<Lock_t>::init()
-{
-  _lock = 0;
-}
 
 PUBLIC template<typename Lock_t> inline
 typename Spin_lock<Lock_t>::Status

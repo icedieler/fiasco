@@ -14,22 +14,19 @@ protected:
 //---------------------------------------------------------------------------
 IMPLEMENTATION [arm && cpu_virt]:
 
-EXTENSION class Context
-{
-protected:
-  enum
-  {
-    Host_cntkctl = (1U << 8) | (1U << 1),
-    // see: generic_timer.cpp: setup_timer_access (Hyp)
-    Host_cnthctl = 1U,  // enable PL1+PL0 access to CNTPCT_EL0
-    Guest_cnthctl = 0U, // disable PL1+PL0 access to CNTPCT_EL0
-  };
-};
-
 PROTECTED static inline
 Context::Vm_state *
 Context::vm_state(Vcpu_state *vs)
-{ return reinterpret_cast<Vm_state *>(reinterpret_cast<char *>(vs) + 0x400); }
+{ return offset_cast<Vm_state *>(vs, 0x400); }
+
+PROTECTED inline
+void
+Context::sanitize_vmm_state(Return_frame *r) const
+{
+  r->psr_set_mode((_hyp.hcr & Cpu::Hcr_tge) ? Proc::Status_mode_user_el0
+                                            : Proc::Status_mode_user_el1);
+  r->psr |= 0x1c0; // mask PSTATE.{I,A,F}
+}
 
 IMPLEMENT_OVERRIDE
 void
@@ -39,7 +36,9 @@ Context::arch_vcpu_ext_shutdown()
     return;
 
   state_del_dirty(Thread_ext_vcpu_enabled);
-  _hyp.hcr = Cpu::Hcr_non_vm_bits;
+  regs()->psr = Proc::Status_mode_user_el0;
+  _hyp.hcr = Cpu::Hcr_non_vm_bits_el0;
+  Cpu::hcr(_hyp.hcr);
   arm_hyp_load_non_vm_state(true);
 }
 
@@ -53,19 +52,13 @@ Context::arch_load_vcpu_kern_state(Vcpu_state *vcpu, bool do_load)
   if (!(state() & Thread_ext_vcpu_enabled))
     {
       _tpidruro = vcpu->host.tpidruro;
-      // vCPU user state has TGE set, so we need to reload HCR here
-      _hyp.hcr = Cpu::Hcr_non_vm_bits;
       if (do_load)
-        {
-          Cpu::hcr(_hyp.hcr);
-          load_tpidruro();
-        }
+        load_tpidruro();
       return;
     }
 
   Vm_state *v = vm_state(vcpu);
 
-  v->guest_regs.hcr = _hyp.hcr;
   bool const all_priv_vm = !(_hyp.hcr & Cpu::Hcr_tge);
   if (all_priv_vm)
     {
@@ -80,28 +73,22 @@ Context::arch_load_vcpu_kern_state(Vcpu_state *vcpu, bool do_load)
     }
 
   _tpidruro = vcpu->host.tpidruro;
-  _hyp.hcr = Cpu::Hcr_host_bits;
+  _hyp.hcr = access_once(&v->host_regs.hcr) | Cpu::Hcr_must_set_bits;
   if (do_load)
-    arm_ext_vcpu_load_host_regs(vcpu, v);
+    arm_ext_vcpu_load_host_regs(vcpu, v, _hyp.hcr);
 }
 
 IMPLEMENT_OVERRIDE inline NEEDS[Context::vm_state,
                                 Context::arm_ext_vcpu_switch_to_guest,
-                                Context::arm_ext_vcpu_switch_to_guest_no_load,
                                 Context::arm_ext_vcpu_load_guest_regs]
 void
-Context::arch_load_vcpu_user_state(Vcpu_state *vcpu, bool do_load)
+Context::arch_load_vcpu_user_state(Vcpu_state *vcpu)
 {
 
   if (!(state() & Thread_ext_vcpu_enabled))
     {
-      _hyp.hcr = Cpu::Hcr_non_vm_bits | Cpu::Hcr_tge;
       _tpidruro = vcpu->_regs.tpidruro;
-      if (do_load)
-        {
-          Cpu::hcr(_hyp.hcr);
-          load_tpidruro();
-        }
+      load_tpidruro();
       return;
     }
 
@@ -111,25 +98,12 @@ Context::arch_load_vcpu_user_state(Vcpu_state *vcpu, bool do_load)
 
   if (all_priv_vm)
     {
-      if (do_load)
-        {
-          arm_ext_vcpu_switch_to_guest(vcpu, v);
-          Gic_h_global::gic->load_full(&v->gic, true);
-        }
-      else
-        arm_ext_vcpu_switch_to_guest_no_load(vcpu, v);
+      arm_ext_vcpu_switch_to_guest(vcpu, v);
+      Gic_h_global::gic->load_full(&v->gic, true);
     }
 
-  if (do_load)
-    {
-      arm_ext_vcpu_load_guest_regs(vcpu, v, _hyp.hcr);
-      _tpidruro          = vcpu->_regs.tpidruro;
-    }
-  else
-    {
-      vcpu->host.tpidruro = _tpidruro;
-      _tpidruro           = vcpu->_regs.tpidruro;
-    }
+  arm_ext_vcpu_load_guest_regs(vcpu, v, _hyp.hcr);
+  _tpidruro          = vcpu->_regs.tpidruro;
 }
 
 PUBLIC inline NEEDS[Context::arm_hyp_load_non_vm_state,
@@ -170,12 +144,10 @@ Context::switch_vm_state(Context *t)
 
       if (_to_state & Thread_vcpu_user)
         {
-          load_cnthctl(Guest_cnthctl);
           Gic_h_global::gic->load_full(&v->gic, vgic);
         }
       else
         {
-          load_cnthctl(Host_cnthctl);
           if (vgic)
             Gic_h_global::gic->disable();
         }

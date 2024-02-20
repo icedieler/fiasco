@@ -74,6 +74,7 @@ public:
   {
     Exr_cancel            = 0x10000,
     Exr_trigger_exception = 0x20000,
+    Exr_arch_mask         = 0xffUL << 24,
   };
 
   enum Vcpu_ctl_flags
@@ -150,6 +151,8 @@ public:
 protected:
   explicit Thread(Ram_quota *, Context_mode_kernel);
 
+  bool ex_regs_arch(Mword ops);
+
   // More ipc state
   Thread_ptr _pager;
   Thread_ptr _exc_handler;
@@ -210,7 +213,7 @@ DEFINE_PER_CPU Per_cpu<unsigned long> Thread::nested_trap_recover;
 
 PUBLIC inline
 void *
-Thread::operator new(size_t, Ram_quota *q) throw ()
+Thread::operator new(size_t, Ram_quota *q) noexcept
 {
   void *t = Kmem_alloc::allocator()->q_alloc(q, Bytes(Thread::Size));
   if (t)
@@ -230,7 +233,7 @@ Thread::kbind(Task *t)
 
 PUBLIC
 bool
-Thread::bind(Task *t, User<Utcb>::Ptr utcb)
+Thread::bind(Task *t, User_ptr<Utcb> utcb)
 {
   // _utcb == 0 for all kernel threads
   Space::Ku_mem const *u = t->find_ku_mem(utcb, sizeof(Utcb));
@@ -294,7 +297,7 @@ Thread::Thread(Ram_quota *q, Context_mode_kernel)
   _space.space(Kernel_task::kernel_task());
 
   if (Config::Stack_depth)
-    std::memset((char*)this + sizeof(Thread), '5',
+    std::memset(reinterpret_cast<char*>(this) + sizeof(Thread), '5',
                 Thread::Size-sizeof(Thread) - 64);
 
   alloc_eager_fpu_state();
@@ -336,11 +339,11 @@ Del_irq_chip Del_irq_chip::chip;
 
 PUBLIC static inline
 Thread *Del_irq_chip::thread(Mword pin)
-{ return (Thread*)pin; }
+{ return reinterpret_cast<Thread*>(pin); }
 
 PUBLIC static inline
 Mword Del_irq_chip::pin(Thread *t)
-{ return (Mword)t; }
+{ return reinterpret_cast<Mword>(t); }
 
 PUBLIC inline
 void
@@ -350,9 +353,8 @@ Del_irq_chip::unbind(Irq_base *irq) override
 
 PUBLIC inline NEEDS["irq_chip.h"]
 void
-Thread::ipc_gate_deleted(Mword id)
+Thread::ipc_gate_deleted(Mword /* id */)
 {
-  (void) id;
   auto g = lock_guard(cpu_lock);
   if (_del_observer)
     _del_observer->hit(0);
@@ -367,8 +369,8 @@ Thread::register_delete_irq(Irq_base *irq)
 
   auto g = lock_guard(irq->irq_lock());
   irq->unbind();
-  Del_irq_chip::chip.bind(irq, (Mword)this);
-  if (cas(&_del_observer, (Irq_base *)nullptr, irq))
+  Del_irq_chip::chip.bind(irq, reinterpret_cast<Mword>(this));
+  if (cas<Irq_base *>(&_del_observer, nullptr, irq))
     return true;
 
   irq->unbind();
@@ -379,7 +381,7 @@ PUBLIC
 void
 Thread::remove_delete_irq(Irq_base *irq)
 {
-  cas(&_del_observer, irq, (Irq_base *)nullptr);
+  cas<Irq_base *>(&_del_observer, irq, nullptr);
 }
 
 // end of: IPC-gate deletion stuff -------------------------------
@@ -500,8 +502,7 @@ Thread::do_kill()
     auto guard = lock_guard(cpu_lock);
 
     // if IPC timeout active, reset it
-    if (_timeout)
-      _timeout->reset();
+    reset_timeout();
 
     Sched_context::Ready_queue &rq = Sched_context::rq.current();
 
@@ -594,7 +595,7 @@ Thread::prepare_kill()
   inc_ref();
   state_add_dirty(Thread_dying | Thread_cancel | Thread_ready);
   _exc_cont.restore(regs()); // overwrite an already triggered exception
-  do_trigger_exception(regs(), (void*)&leave_and_kill_myself);
+  do_trigger_exception(regs(), reinterpret_cast<void*>(&leave_and_kill_myself));
 }
 
 PRIVATE static
@@ -680,6 +681,13 @@ Thread::assert_irq_entry()
              || current_thread()->state() & (Thread_ready_mask | Thread_drq_wait | Thread_waiting | Thread_ipc_transfer));
 }
 
+IMPLEMENT_DEFAULT inline
+bool
+Thread::ex_regs_arch(Mword ops)
+{
+  return (ops & Exr_arch_mask) == 0;
+}
+
 // ---------------------------------------------------------------------------
 
 PUBLIC inline
@@ -726,9 +734,9 @@ Thread::start_migration()
   assert(cpu_lock.test());
   Migration *m = _migration;
 
-  assert (!((Mword)m & 0x3)); // ensure alignment
+  assert (!(reinterpret_cast<Mword>(m) & 0x3)); // ensure alignment
 
-  if (!m || !cas(&_migration, m, (Migration*)0))
+  if (!m || !cas<Migration *>(&_migration, m, nullptr))
     return reinterpret_cast<Migration*>(0x2); // bit one == 0 --> no need to reschedule
 
   if (m->cpu == home_cpu())
@@ -748,8 +756,8 @@ Thread::do_migration()
 {
   Migration *inf = start_migration();
 
-  if ((Mword)inf & 3)
-    return (Mword)inf & 1; // already migrated, nothing to do
+  if (reinterpret_cast<Mword>(inf) & 3)
+    return reinterpret_cast<Mword>(inf) & 1; // already migrated, nothing to do
 
   spill_fpu_if_owner();
 
@@ -773,8 +781,8 @@ Thread::initiate_migration() override
   assert (current() != this);
   Migration *inf = start_migration();
 
-  if ((Mword)inf & 3)
-    return (Mword)inf & 1;
+  if (reinterpret_cast<Mword>(inf) & 3)
+    return reinterpret_cast<Mword>(inf) & 1;
 
   spill_fpu_if_owner();
 
@@ -810,8 +818,6 @@ Thread::switchin_fpu(bool alloc_new_fpu = true)
 {
   if (state() & Thread_vcpu_fpu_disabled)
     return 0;
-
-  (void)alloc_new_fpu;
 
   Fpu &f = Fpu::fpu.current();
   // If we own the FPU, we should never be getting an "FPU unavailable" trap
@@ -1338,8 +1344,8 @@ Thread::migrate_xcpu(Cpu_number cpu)
         {
           Migration *inf = start_migration();
 
-          if ((Mword)inf & 3)
-            return (Mword)inf & 1; // all done, nothing to do
+          if (reinterpret_cast<Mword>(inf) & 3)
+            return reinterpret_cast<Mword>(inf) & 1; // all done, nothing to do
 
           Cpu_number target_cpu = access_once(&inf->cpu);
           migrate_away(inf, true);
@@ -1376,7 +1382,7 @@ Thread::Dbg_stack::Dbg_stack()
 {
   stack_top = Kmem_alloc::allocator()->alloc(Bytes(Stack_size));
   if (stack_top)
-    stack_top = (char *)stack_top + Stack_size;
+    stack_top = static_cast<char *>(stack_top) + Stack_size;
   //printf("JDB STACK start= %p - %p\n", (char *)stack_top - Stack_size, (char *)stack_top);
 }
 
@@ -1435,3 +1441,24 @@ PUBLIC static
 void FIASCO_NORETURN
 Thread::system_abort()
 { terminate(EXIT_FAILURE); }
+
+//----------------------------------------------------------------------------
+IMPLEMENTATION [!mbt_counter]:
+
+PUBLIC inline void Thread::increment_mbt_counter() {}
+
+//----------------------------------------------------------------------------
+IMPLEMENTATION [mbt_counter]:
+
+PUBLIC
+inline void
+Thread::increment_mbt_counter()
+{
+  // Model-Based Testing: increment testcounter if requested
+  Utcb *utcb = this->utcb().access(true);
+  if (utcb->user[2] == 0xdeadbeef)
+    {
+      atomic_add(&Kip::k()->mbt_counter, 1);
+      utcb->user[2] = 0;
+    }
+}

@@ -5,15 +5,6 @@ INTERFACE [arm]:
 class Psci
 {
 public:
-  static void init(Cpu_number cpu);
-};
-
-// ------------------------------------------------------------------------
-INTERFACE [arm && arm_psci]:
-
-EXTENSION class Psci
-{
-public:
   struct Result
   {
     Mword res[4];
@@ -32,6 +23,8 @@ public:
     Psci_disabled           = -8,
     Psci_invalid_address    = -9,
   };
+
+  static void init(Cpu_number cpu);
 
 private:
   enum Functions
@@ -58,8 +51,6 @@ private:
     Psci_stat_residency      = 16,
     Psci_stat_count          = 17,
   };
-
-  static bool is_v1;
 };
 
 // ------------------------------------------------------------------------
@@ -102,8 +93,6 @@ IMPLEMENTATION [arm && arm_psci]:
 #include "smc_call.h"
 
 #include <cstdio>
-
-bool Psci::is_v1;
 
 PRIVATE static
 unsigned long
@@ -162,13 +151,13 @@ Psci::init(Cpu_number cpu)
   Result r = psci_call(Psci_version);
   printf("Detected PSCI v%ld.%ld\n", r.res[0] >> 16, r.res[0] & 0xffff);
 
-  is_v1 = (r.res[0] >> 16) >= 1;
+  bool is_v1 = (r.res[0] >> 16) >= 1;
 
   if (is_v1)
     {
       r = psci_call(Psci_features, psci_fn(Psci_cpu_suspend));
       if (r.res[0] & (1UL << 31))
-        printf("PSCI: CPU_Suspend not supported (%d)\n", (int)r.res[0]);
+        printf("PSCI: CPU_Suspend not supported (%ld)\n", r.res[0]);
       else
         printf("PSCI: CPU_SUSPEND format %s, %s OS-initiated mode\n",
                r.res[0] & 2 ? "extended" : "original v0.2",

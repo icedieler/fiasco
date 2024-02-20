@@ -24,10 +24,10 @@ void *Vmem_alloc::page_alloc(void *address, Zero_fill zf, unsigned mode)
   if (EXPECT_FALSE(!vpage))
     return 0;
 
-  Address page = Kmem::kdir->virt_to_phys((Address)vpage);
+  Address page = Kmem::kdir->virt_to_phys(reinterpret_cast<Address>(vpage));
   if (0)
     printf("  allocated page (virt=%p, phys=%08lx\n", vpage, page);
-  Mem_unit::inv_dcache(vpage, ((char*)vpage) + Config::PAGE_SIZE);
+  Mem_unit::inv_dcache(vpage, offset_cast<void *>(vpage, Config::PAGE_SIZE));
 
   // insert page into master page table
   auto pte = Kmem::kdir->walk(Virt_addr(address),
@@ -38,11 +38,9 @@ void *Vmem_alloc::page_alloc(void *address, Zero_fill zf, unsigned mode)
   if (mode & User)
     r |= Page::Rights::U();
 
-  pte.set_page(pte.make_page(Phys_mem_addr(page),
-                             Page::Attr(r, Page::Type::Normal(),
-                                        Page::Kern::Global())));
+  pte.set_page(Phys_mem_addr(page), Page::Attr::kern_global(r));
   pte.write_back_if(true);
-  Mem_unit::tlb_flush_kernel((Address)address);
+  Mem_unit::tlb_flush_kernel(reinterpret_cast<Address>(address));
 
   if (zf == ZERO_FILL)
     Mem::memset_mwords(address, 0, Config::PAGE_SIZE / sizeof(Mword));

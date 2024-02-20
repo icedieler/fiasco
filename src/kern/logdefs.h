@@ -21,16 +21,16 @@
 
 #if !defined(CONFIG_JDB)
 
-#define LOG_TRACE_COND(name, sc, ctx, fmt, cond, code...) ((void) 0)
-#define LOG_TRACE(name, sc, ctx, fmt, code...) ((void) 0)
-#define LOG_CONTEXT_SWITCH                     ((void) 0)
-#define LOG_TRAP                               ((void) 0)
-#define LOG_TRAP_N(n)                          ((void) 0)
-#define LOG_TRAP_CN(c, n)                      ((void) 0)
-#define LOG_SCHED_SAVE(n)                      ((void) 0)
-#define LOG_SCHED_LOAD(n)                      ((void) 0)
-#define LOG_MSG(ctx, txt)                      ((void) 0)
-#define LOG_MSG_3VAL(ctx, txt, v1, v2, v3)     ((void) 0)
+#define LOG_TRACE_COND(name, sc, ctx, fmt, cond, ...) static_cast<void>(0)
+#define LOG_TRACE(name, sc, ctx, fmt, ...)     static_cast<void>(0)
+#define LOG_CONTEXT_SWITCH                     static_cast<void>(0)
+#define LOG_TRAP                               static_cast<void>(0)
+#define LOG_TRAP_N(n)                          static_cast<void>(0)
+#define LOG_TRAP_CN(c, n)                      static_cast<void>(0)
+#define LOG_SCHED_SAVE(n)                      static_cast<void>(0)
+#define LOG_SCHED_LOAD(n)                      static_cast<void>(0)
+#define LOG_MSG(ctx, txt)                      static_cast<void>(0)
+#define LOG_MSG_3VAL(ctx, txt, v1, v2, v3)     static_cast<void>(0)
 
 #else
 
@@ -38,31 +38,31 @@
 #include "jdb_tbuf.h"
 #include "processor.h"
 
-#define LOG_TRACE_COND(name, sc, ctx, fmt, cond, code...)               \
+#define LOG_TRACE_COND(name, sc, ctx, fmt, cond, ...)                   \
   BEGIN_LOG_EVENT(name, sc, fmt)                                        \
     if (cond)                                                           \
       {                                                                 \
         fmt *l = Jdb_tbuf::new_entry<fmt>();                            \
         l->set_global(__do_log__, ctx, Proc::program_counter());        \
-        {code;}                                                         \
+        {__VA_ARGS__;}                                                  \
         Jdb_tbuf::commit_entry(l);                                      \
       }                                                                 \
   END_LOG_EVENT
 
-#define LOG_TRACE(name, sc, ctx, fmt, code...)                          \
-  LOG_TRACE_COND(name, sc, ctx, fmt, true, code)
+#define LOG_TRACE(name, sc, ctx, fmt, ...)                              \
+  LOG_TRACE_COND(name, sc, ctx, fmt, true, __VA_ARGS__)
 
 #define LOG_CONTEXT_SWITCH                                              \
   LOG_TRACE("Context switch", "csw", this, Tb_entry_ctx_sw,             \
     Sched_context *cs = Sched_context::rq.current().current_sched();    \
     l->from_space = space();                                            \
-    l->_ip = regs()->ip_syscall_page_user();                            \
+    l->_ip = regs()->ip_syscall_user();                                 \
     l->dst = t;                                                         \
     l->dst_orig = t_orig;                                               \
     l->lock_cnt = t_orig->lock_cnt();                                   \
     l->from_sched = cs;                                                 \
     l->from_prio = cs ? cs->prio() : 0;                                 \
-    l->kernel_ip = (Mword)__builtin_return_address(0) )
+    l->kernel_ip = reinterpret_cast<Mword>(__builtin_return_address(0)) )
 
 #define LOG_TRAP                                                        \
   LOG_TRACE_COND("Exceptions", "exc", current(), Tb_entry_trap,         \
@@ -131,28 +131,24 @@
 #define CNT_EXC_IPC             Jdb_tbuf::status()->kerncnts[Kern_cnt_exc_ipc]++;
 
 // FIXME: currently unused entries below
-#define CNT_SHORTCUT_FAILED     Jdb_tbuf::status()->kerncnts[Kern_cnt_shortcut_failed]++;
-#define CNT_SHORTCUT_SUCCESS    Jdb_tbuf::status()->kerncnts[Kern_cnt_shortcut_success]++;
 #define CNT_IPC_LONG            Jdb_tbuf::status()->kerncnts[Kern_cnt_ipc_long]++;
 #define CNT_TASK_CREATE         Jdb_tbuf::status()->kerncnts[Kern_cnt_task_create]++;
 #define CNT_IOBMAP_TLB_FLUSH    Jdb_tbuf::status()->kerncnts[Kern_cnt_iobmap_tlb_flush]++;
 
 #else
 
-#define CNT_CONTEXT_SWITCH	((void) 0)
-#define CNT_ADDR_SPACE_SWITCH	((void) 0)
-#define CNT_IRQ			((void) 0)
-#define CNT_PAGE_FAULT		((void) 0)
-#define CNT_IO_FAULT		((void) 0)
-#define CNT_SCHEDULE		((void) 0)
-#define CNT_EXC_IPC             ((void) 0)
+#define CNT_CONTEXT_SWITCH	static_cast<void>(0)
+#define CNT_ADDR_SPACE_SWITCH	static_cast<void>(0)
+#define CNT_IRQ			static_cast<void>(0)
+#define CNT_PAGE_FAULT		static_cast<void>(0)
+#define CNT_IO_FAULT		static_cast<void>(0)
+#define CNT_SCHEDULE		static_cast<void>(0)
+#define CNT_EXC_IPC             static_cast<void>(0)
 
 // FIXME: currently unused entries below
-#define CNT_SHORTCUT_FAILED	((void) 0)
-#define CNT_SHORTCUT_SUCCESS	((void) 0)
-#define CNT_IPC_LONG		((void) 0)
-#define CNT_TASK_CREATE		((void) 0)
-#define CNT_IOBMAP_TLB_FLUSH	((void) 0)
+#define CNT_IPC_LONG		static_cast<void>(0)
+#define CNT_TASK_CREATE		static_cast<void>(0)
+#define CNT_IOBMAP_TLB_FLUSH	static_cast<void>(0)
 
 #endif // CONFIG_JDB && CONFIG_JDB_ACCOUNTING
 

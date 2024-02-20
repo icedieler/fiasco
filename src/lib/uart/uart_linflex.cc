@@ -66,7 +66,7 @@ namespace L4
 
     _regs->write<unsigned>(UARTCR, UARTCR_UART);
 
-    /* Do not use FIFO more for RX, IRQs do not work with FIFO mode
+    /* Do not use FIFO mode for RX, IRQs do not work with FIFO mode
      * (or something is wrong in the config whatsoever...) */
     unsigned v = UARTCR_UART
                  | UARTCR_WL0
@@ -108,9 +108,8 @@ namespace L4
   {
   }
 
-  bool Uart_linflex::change_mode(Transfer_mode, Baud_rate r)
+  bool Uart_linflex::change_mode(Transfer_mode, Baud_rate)
   {
-    (void)r;
     return true;
   }
 

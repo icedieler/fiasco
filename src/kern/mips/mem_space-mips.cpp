@@ -234,19 +234,6 @@ Mem_space::virt_to_phys(Address virt) const
   return ~0UL;
 }
 
-/**
- * Simple page-table lookup.
- *
- * @param virt Virtual address.  This address does not need to be page-aligned.
- * @return Physical address corresponding to a.
- */
-PUBLIC inline NEEDS ["mem_layout.h"]
-Address
-Mem_space::pmem_to_phys(Address virt) const
-{
-  return Mem_layout::pmem_to_phys(virt);
-}
-
 IMPLEMENT
 bool
 Mem_space::v_lookup(Vaddr const virt, Phys_addr *phys,
@@ -470,13 +457,10 @@ void Mem_space::switchin_context(Mem_space *, Switchin_flags flags)
 
 IMPLEMENT inline NEEDS["mem_unit.h"]
 void
-Mem_space::tlb_flush(bool force = false)
+Mem_space::tlb_flush_current_cpu()
 {
-  if (force)
-    {
-      Mem_unit::tlb_flush(c_asid(), 0);
-      tlb_mark_unused_if_non_current();
-    }
+  Mem_unit::tlb_flush(c_asid(), 0);
+  tlb_mark_unused_if_non_current();
 }
 
 
@@ -588,11 +572,8 @@ Mem_space::guest_id_init()
 
 IMPLEMENT inline NEEDS["mem_unit.h"]
 void
-Mem_space::tlb_flush(bool force = false)
+Mem_space::tlb_flush_current_cpu()
 {
-  if (!force)
-    return;
-
   Cpu_number cpu = current_cpu();
   Mem_unit::tlb_flush(Asid_ops::get_id(this, cpu),
                       Guest_id_ops::get_id(this, cpu));

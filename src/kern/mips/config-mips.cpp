@@ -11,21 +11,14 @@ public:
 
     PAGE_SHIFT = ARCH_PAGE_SHIFT,
     PAGE_SIZE  = 1 << PAGE_SHIFT,
-    PAGE_MASK  = ~(PAGE_SIZE - 1),
+
     SUPERPAGE_SHIFT = 21, // MUST be a odd number!
     SUPERPAGE_SIZE  = 1 << SUPERPAGE_SHIFT,
-    SUPERPAGE_MASK  = ~(SUPERPAGE_SIZE -1),
 
     // XXXKYMA: No large pages/TLBs yet, update paging-mips32 when enabled
     have_superpages = 0,
     hlt_works_ok = 1,
     Irq_shortcut = 1,
-  };
-
-  enum
-  {
-    Kmem_per_cent = 6,
-    Kmem_max_mb   = 32,
   };
 
   enum
@@ -49,6 +42,9 @@ IMPLEMENTATION [mips]:
 
 const char *const Config::kernel_warn_config_string = 0;
 
+IMPLEMENT_OVERRIDE inline ALWAYS_INLINE
+constexpr unsigned long Config::kmem_max() { return 32UL << 20; }
+
 IMPLEMENT FIASCO_INIT
 void
 Config::init_arch()
@@ -56,4 +52,3 @@ Config::init_arch()
   // set a smaller default for JDB trace buffers
   Config::tbuf_entries = 1024;
 }
-

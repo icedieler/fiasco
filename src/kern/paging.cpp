@@ -10,7 +10,7 @@ class Page
 public:
 
   /* These things must be defined in arch part in
-     the most efficent way according to the architecture.
+     the most efficient way according to the architecture.
 
   enum Attribs_enum {
     USER_NO  = xxx, ///< User No access
@@ -21,7 +21,7 @@ public:
     USER_RWX = xxx, ///< User Read/Write/Execute
 
     NONCACHEABLE = xxx, ///< Caching is off
-    CACHEABLE    = xxx, ///< Cahe is enabled
+    CACHEABLE    = xxx, ///< Caching is enabled
   };
 
   */
@@ -33,10 +33,10 @@ public:
     cxx::int_null_chk<Kern>
   {
     Kern() = default;
-    explicit Kern(Value v) : cxx::int_type_base<unsigned char, Kern>(v) {}
+    explicit constexpr Kern(Value v) : cxx::int_type_base<unsigned char, Kern>(v) {}
 
-    static Kern None() { return Kern(0); }
-    static Kern Global() { return Kern(1); }
+    static constexpr Kern None() { return Kern(0); }
+    static constexpr Kern Global() { return Kern(1); }
   };
 
   typedef L4_fpage::Rights Rights;
@@ -48,8 +48,16 @@ public:
     Kern kern;
 
     Attr() = default;
-    explicit Attr(Rights r, Type t = Type::Normal(), Kern k = Kern::None())
+    explicit constexpr Attr(Rights r, Type t, Kern k)
     : rights(r), type(t), kern(k) {}
+
+    // per-space local mapping, "normally" cached
+    static constexpr Attr space_local(Rights r)
+    { return Attr(r, Type::Normal(), Kern::None()); }
+
+    // global kernel mapping, "normally" cached
+    static constexpr Attr kern_global(Rights r)
+    { return Attr(r, Type::Normal(), Kern::Global()); }
 
     Attr apply(Attr o) const
     {
@@ -120,7 +128,7 @@ inline Pdir_alloc_simple<ALLOC> pdir_alloc(ALLOC *a)
 IMPLEMENT inline NEEDS[PF::is_usermode_error]
 Mword PF::pc_to_msgword1(Address pc, Mword error)
 {
-  return is_usermode_error(error) ? pc : (Mword)-1;
+  return is_usermode_error(error) ? pc : Invalid_address;
 }
 
 //---------------------------------------------------------------------------

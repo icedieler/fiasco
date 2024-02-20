@@ -15,8 +15,6 @@ class Rcu_batch
 {
   friend class Jdb_rcupdate;
 public:
-  /// create uninitialized batch.
-  Rcu_batch() = default;
   /// create a batch initialized with \a b.
   Rcu_batch(long b) : _b(b) {}
 
@@ -51,9 +49,10 @@ class Rcu_item : public cxx::S_list_item
   friend class Rcu_data;
   friend class Rcu;
   friend class Jdb_rcupdate;
+  friend class Rcu_tester;
 
 private:
-  bool (*_call_back)(Rcu_item *);
+  bool (*_call_back)(Rcu_item *) = nullptr;
 };
 
 
@@ -90,17 +89,17 @@ class Rcu_data
   friend class Jdb_rcupdate;
 public:
 
-  Rcu_batch _q_batch;   ///< batch no. for grace period
-  bool _q_passed;       ///< quiescent state for batch `_q_batch` passed?
-  bool _pending;        ///< waiting for quiescent state for batch `_q_batch`?
-  bool _idle;           ///< `false` iff CPU `_cpu` is participating in RCU
+  Rcu_batch _q_batch;     ///< batch no. for grace period
+  bool _q_passed = false; ///< quiescent state for batch `_q_batch` passed?
+  bool _pending  = false; ///< waiting for quiescent state for batch `_q_batch`?
+  bool _idle     = true;  ///< `false` iff CPU `_cpu` is participating in RCU
 
-  Rcu_batch _batch;     ///< batch no. assigned to the items in `_c`
-  Rcu_list _n;          ///< new items: waiting for being assigned to a batch
-  long _len;            ///< number of items in `_n + _c + _d` (for debugging)
-  Rcu_list _c;          ///< current items: assigned to batch `_batch`
-  Rcu_list _d;          ///< done items: waited a full grace period
-  Cpu_number _cpu;      ///< the CPU this `Rcu_data` instance is assigned to
+  Rcu_batch _batch;       ///< batch no. assigned to the items in `_c`
+  Rcu_list _n;            ///< new items: waiting for being assigned to a batch
+  long _len = 0;          ///< number of items in `_n + _c + _d` (for debugging)
+  Rcu_list _c;            ///< current items: assigned to batch `_batch`
+  Rcu_list _d;            ///< done items: waited a full grace period
+  Cpu_number _cpu;        ///< the CPU this `Rcu_data` instance is assigned to
 };
 
 
@@ -114,13 +113,13 @@ class Rcu_glbl
   friend class Jdb_rcupdate;
 
 private:
-  Rcu_batch _current;      ///< current batch
-  Rcu_batch _completed;    ///< last completed batch
-  bool _next_pending;      ///< Are there items in batch `_current + 1`?
+  Rcu_batch _current;         ///< current batch
+  Rcu_batch _completed;       ///< last completed batch
+  bool _next_pending = false; ///< Are there items in batch `_current + 1`?
   Spin_lock<> _lock;
-  Cpu_mask _cpus;          ///< CPUs waiting for a quiescent state
+  Cpu_mask _cpus;             ///< CPUs waiting for a quiescent state
 
-  Cpu_mask _active_cpus;   ///< CPUs participating in RCU
+  Cpu_mask _active_cpus;      ///< CPUs participating in RCU
 
 };
 
@@ -182,7 +181,7 @@ Rcu::Log_rcu::print(String_buffer *buf) const
 {
   char const *events[] = { "call", "process"};
   buf->printf("rcu-%s (cpu=%u) item=%p", events[event],
-              cxx::int_value<Cpu_number>(cpu), item);
+              cxx::int_value<Cpu_number>(cpu), static_cast<void *>(item));
 }
 
 
@@ -195,27 +194,11 @@ IMPLEMENTATION:
 #include "lock_guard.h"
 #include "mem.h"
 #include "static_init.h"
-#include "timeout.h"
 #include "logdefs.h"
-
-
-class Rcu_timeout : public Timeout
-{
-};
-
-/**
- * Timeout expiration callback function
- * @return true if reschedule is necessary, false otherwise
- */
-PRIVATE
-bool
-Rcu_timeout::expired() override
-{ return Rcu::process_callbacks(); }
 
 
 Rcu_glbl Rcu::_rcu INIT_PRIORITY(EARLY_INIT_PRIO);
 DEFINE_PER_CPU Per_cpu<Rcu_data> Rcu::_rcu_data(Per_cpu_data::Cpu_num);
-DEFINE_PER_CPU static Per_cpu<Rcu_timeout> _rcu_timeout;
 
 PUBLIC
 Rcu_glbl::Rcu_glbl()
@@ -225,8 +208,7 @@ Rcu_glbl::Rcu_glbl()
 
 PUBLIC
 Rcu_data::Rcu_data(Cpu_number cpu)
-: _idle(true),
-  _cpu(cpu)
+: _q_batch(0), _batch(0), _cpu(cpu)
 {}
 
 
@@ -407,7 +389,7 @@ Rcu::call(Rcu_item *i, bool (*cb)(Rcu_item *))
       l->cpu   = current_cpu();
       l->event = Rcu_call;
       l->item = i;
-      l->cb = (void*)cb);
+      l->cb = reinterpret_cast<void*>(cb));
 
   auto guard = lock_guard(cpu_lock);
 
@@ -515,11 +497,6 @@ Rcu_data::pending(Rcu_glbl *rgp) const
 
 PUBLIC static inline NEEDS["globals.h"]
 bool FIASCO_WARN_RESULT
-Rcu::process_callbacks()
-{ return _rcu_data.current().process_callbacks(&_rcu); }
-
-PUBLIC static inline NEEDS["globals.h"]
-bool FIASCO_WARN_RESULT
 Rcu::process_callbacks(Cpu_number cpu)
 { return _rcu_data.cpu(cpu).process_callbacks(&_rcu); }
 
@@ -542,15 +519,6 @@ PUBLIC static inline
 void
 Rcu::inc_q_cnt(Cpu_number cpu)
 { _rcu_data.cpu(cpu)._q_passed = true; }
-
-PUBLIC static
-void
-Rcu::schedule_callbacks(Cpu_number cpu, Unsigned64 clock)
-{
-  Timeout *t = &_rcu_timeout.cpu(cpu);
-  if (!t->is_set())
-    t->set(clock, cpu);
-}
 
 PUBLIC static inline NEEDS["cpu_lock.h"]
 Rcu::Lock *

@@ -8,34 +8,37 @@ IMPLEMENTATION [arm]:
 #include "ram_quota.h"
 
 #include "mem_layout.h"
+#include "kmem.h"
 #include "kmem_space.h"
+#include "minmax.h"
 #include "static_init.h"
+#include "paging_bits.h"
+#include "panic.h"
 
-PRIVATE //inline
+PRIVATE
 bool
-Kmem_alloc::map_pmem(unsigned long phy, unsigned long size)
+Kmem_alloc::map_pmem(unsigned long phys, unsigned long size,
+                     unsigned long *map_addr)
 {
   static unsigned long next_map = Mem_layout::Pmem_start;
 
-  assert(cxx::get_lsb(phy, Config::SUPERPAGE_SHIFT) == 0);
-  assert(cxx::get_lsb(size, Config::SUPERPAGE_SHIFT) == 0);
+  assert(Super_pg::aligned(phys));
+  assert(Super_pg::aligned(size));
 
   if (next_map + size > Mem_layout::Pmem_end)
     return false;
 
-  if (!Mem_layout::add_pmem(phy, next_map, size))
+  *map_addr = next_map;
+  if (!Mem_layout::add_pmem(phys, next_map, size))
     return false;
 
   for (unsigned long i = 0; i <size; i += Config::SUPERPAGE_SIZE)
     {
-      auto pte = Mem_layout::kdir->walk(Virt_addr(next_map + i),
-                                        Kpdir::Super_level);
-      assert (!pte.is_valid());
-      assert (pte.page_order() == Config::SUPERPAGE_SHIFT);
-      pte.set_page(pte.make_page(Phys_mem_addr(phy + i),
-                                 Page::Attr(Page::Rights::RW(),
-                                            Page::Type::Normal(),
-                                            Page::Kern::Global())));
+      auto pte = Kmem::kdir->walk(Virt_addr(next_map + i), Kpdir::Super_level);
+      assert(!pte.is_valid());
+      assert(pte.page_order() == Config::SUPERPAGE_SHIFT);
+      pte.set_page(Phys_mem_addr(phys + i),
+                   Page::Attr::kern_global(Page::Rights::RW()));
       pte.write_back_if(true);
       Mem_unit::tlb_flush_kernel(next_map + i);
     }
@@ -44,63 +47,50 @@ Kmem_alloc::map_pmem(unsigned long phy, unsigned long size)
   return true;
 }
 
-PUBLIC inline NEEDS["kmem_space.h", "mem_layout.h"]
-Address
-Kmem_alloc::to_phys(void *v) const
-{
-  return Mem_layout::pmem_to_phys((Address)v);
-}
-
-static unsigned long _freemap[
-  Kmem_alloc::Alloc::free_map_bytes(Mem_layout::Pmem_start,
-                                    Mem_layout::Pmem_start + Config::KMEM_SIZE - 1)
-  / sizeof(unsigned long)];
-
-static_assert(Config::KMEM_SIZE <= Mem_layout::Pmem_end - Mem_layout::Pmem_start,
-              "Kernel memory does not fit into Pmem range.");
-
 IMPLEMENT
 Kmem_alloc::Kmem_alloc()
 {
-  // The -Wframe-larger-than= warning for this function is known and
-  // no problem, because the function runs only on our boot stack.
-  Mword alloc_size = Config::KMEM_SIZE;
-  static_assert(!cxx::get_lsb((Address)Config::KMEM_SIZE, Config::SUPERPAGE_SHIFT),
-                "KMEM_SIZE must be superpage-aligned");
   Mem_region_map<64> map;
-  unsigned long available_size = create_free_map(Kip::k(), &map,
-                                                 Config::SUPERPAGE_SIZE);
+  unsigned long available_size
+    = create_free_map(Kip::k(), &map, Config::SUPERPAGE_SIZE);
 
-  // sanity check whether the KIP has been filled out, number is arbitrary
-  if (available_size < (1 << 18))
-    panic("Kmem_alloc: No kernel memory available (%ld)\n",
-          available_size);
+  unsigned long alloc_size = determine_kmem_alloc_size(available_size,
+                                                       Config::SUPERPAGE_SIZE);
 
-  a->init(Mem_layout::Pmem_start);
-  a->setup_free_map(_freemap, sizeof(_freemap));
-
+  // Walk through all KIP memory regions of conventional memory minus the
+  // reserved memory and find one or more regions suitable for the kernel
+  // memory.
+  //
+  // The kernel memory regions are added to the KIP as `Kernel_tmp`. Later, in
+  // setup_kmem_from_kip_md_tmp(), these regions are added as kernel memory
+  // (a()->add_mem()) and marked as "Reserved".
+  unsigned long min_virt = ~0UL, max_virt = 0UL;
   for (int i = map.length() - 1; i >= 0 && alloc_size > 0; --i)
     {
       Mem_region f = map[i];
       if (f.size() > alloc_size)
-        f.start += (f.size() - alloc_size);
+        f.start += f.size() - alloc_size;
 
-      Kip::k()->add_mem_region(Mem_desc(f.start, f.end, Mem_desc::Reserved));
-      if (0)
-        printf("Kmem_alloc: [%08lx; %08lx] sz=%ld\n", f.start, f.end, f.size());
-      if (!map_pmem(f.start, f.size()))
-        {
-          WARN("Kmem_alloc: cannot map heap memory [%08lx; %08lx]\n",
-               f.start, f.end);
-          break;
-        }
+      Kip::k()->add_mem_region(Mem_desc(f.start, f.end, Mem_desc::Kernel_tmp));
 
-      a->add_mem((void *)Mem_layout::phys_to_pmem(f.start), f.size());
+      unsigned long map_addr;
+      if (!map_pmem(f.start, f.size(), &map_addr))
+        panic("Kmem_alloc: cannot map heap memory [%08lx; %08lx]",
+              f.start, f.end);
+
+      min_virt = min(min_virt, map_addr);
+      max_virt = max(max_virt, map_addr + f.size());
       alloc_size -= f.size();
     }
 
   if (alloc_size)
-    WARNX(Warning, "Kmem_alloc: cannot allocate sufficient kernel memory\n");
+    panic("Kmem_alloc: cannot allocate sufficient kernel memory (missing %ld)",
+          alloc_size);
+
+  unsigned long freemap_size = Alloc::free_map_bytes(min_virt, max_virt);
+  Address min_addr_kern = min_virt;
+
+  setup_kmem_from_kip_md_tmp(freemap_size, min_addr_kern);
 }
 
 /**
@@ -128,12 +118,10 @@ static void add_initial_pmem()
   };
 
   // Find out our virt->phys mapping simply by walking the page table.
-  Address virt = Mem_layout::trunc_superpage((unsigned long)_kernel_image_start);
-  Address size = Mem_layout::round_superpage((unsigned long)_initcall_end)
-                  - virt;
-  auto pte = Mem_layout::kdir->walk(Virt_addr(virt),
-                                    Kpdir::Super_level, false,
-                                    Ptab::Null_alloc(), Identity_map());
+  Address virt = Super_pg::trunc(reinterpret_cast<Address>(_kernel_image_start));
+  Address size = Super_pg::round(reinterpret_cast<Address>(_initcall_end)) - virt;
+  auto pte = Kmem::kdir->walk(Virt_addr(virt), Kpdir::Super_level, false,
+                              Ptab::Null_alloc(), Identity_map());
   assert(pte.is_valid());
   unsigned long phys = pte.page_addr();
   Mem_layout::add_pmem(phys, virt, size);
@@ -143,21 +131,3 @@ static void add_initial_pmem()
 }
 
 STATIC_INITIALIZER_P(add_initial_pmem, BOOTSTRAP_INIT_PRIO);
-
-//----------------------------------------------------------------------------
-IMPLEMENTATION [arm && debug]:
-
-#include <cstdio>
-
-#include "panic.h"
-
-PUBLIC
-void Kmem_alloc::debug_dump()
-{
-  a->dump();
-
-  unsigned long free = a->avail();
-  printf("Used %ldKB out of %dKB of Kmem\n",
-	 (Config::KMEM_SIZE - free + 1023)/1024,
-	 (Config::KMEM_SIZE        + 1023)/1024);
-}

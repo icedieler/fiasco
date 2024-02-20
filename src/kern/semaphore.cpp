@@ -7,6 +7,8 @@ INTERFACE:
 
 class Semaphore : public Kobject_h<Semaphore, Irq>
 {
+  Semaphore() = delete;
+
 public:
   friend class Jdb_kobject_irq;
   enum Op {
@@ -26,10 +28,11 @@ IMPLEMENTATION:
 
 JDB_DEFINE_TYPENAME(Semaphore,  "\033[37mIRQ sem\033[m");
 
-PUBLIC explicit
-Semaphore::Semaphore(Ram_quota *q = 0)
+PUBLIC explicit __attribute__((nonnull))
+Semaphore::Semaphore(Ram_quota *q)
 : Kobject_h<Semaphore, Irq>(q), _queued(0)
 {
+  assert(q);
   hit_func = &hit_edge_irq;
   __unmask();
 }
@@ -302,6 +305,7 @@ Semaphore::destroy(Kobject ***reap_list) override
 }
 
 namespace {
+
 static Kobject_iface * FIASCO_FLATTEN
 semaphore_factory(Ram_quota *q, Space *,
                   L4_msg_tag, Utcb const *,
@@ -313,9 +317,11 @@ semaphore_factory(Ram_quota *q, Space *,
   return Irq::allocate<Semaphore>(q);
 }
 
-static inline void __attribute__((constructor)) FIASCO_INIT
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(semaphore_register_factory)
 register_factory()
 {
   Kobject_iface::set_factory(L4_msg_tag::Label_semaphore, semaphore_factory);
 }
+
 }

@@ -37,20 +37,11 @@ GEN_SYSCALL_TABLE
 	cpsid	iaf
 .endm
 
-.macro LOAD_USR_SP vcpu_ptr
-	ldr r0, [\vcpu_ptr, #OFS__VCPU_STATE__ENTRY_SP]
-	str r0, [sp, #RF(USR_SP, 0)]
-.endm
-
-.macro LOAD_USR_VCPU reg, kvcpu, thread
-	ldr \reg, [\thread, #(OFS__THREAD__USER_VCPU)]
-.endm
-
 .align  4
 .LCslowtrap_entry:	.word	slowtrap_entry
 
 GEN_EXCEPTION_RETURN
-GEN_VCPU_UPCALL OFS__THREAD__KERN_VCPU, LOAD_USR_SP, LOAD_USR_VCPU, USER_MODE=0x1f
+GEN_VCPU_UPCALL OFS__THREAD__KERN_VCPU
 GEN_LEAVE_BY_TRIGGER_EXCEPTION
 GEN_LEAVE_AND_KILL_MYSELF
 GEN_DEBUGGER_ENTRIES
@@ -90,7 +81,7 @@ hyp_vector_base:
 .macro HYP_FAULT err
 	switch_to_hyp_kernel
 	stmdb	sp!, {r0 - r12}		@ Stack rest of user state
-	sub	sp, #(4 * 2)
+	sub	sp, #(4 * 2)		@ dummy PFA and dummy error code
 	mov	r0, #\err
 	b	hyp_fault_call
 .endm
@@ -111,13 +102,18 @@ hyp_data_abort_entry:
 hyp_fault_call:
 	mov	r1, sp
 	align_and_save_sp r2
-	b	hyp_mode_fault
+	bl	hyp_mode_fault
+	ldr	sp, [sp]
+	add	sp, sp, #8
+	ldmia	sp, {r0 - r12}
+	disable_irqs
+	add	sp, sp, #(13 * 4)
+	return_from_exception
 
 hyp_trap_entry:
 	switch_to_hyp_kernel
-
 	stmdb	sp!, {r0 - r12}   	@ Stack rest of user state
-	add	r0, sp, #13*4
+	add	r0, sp, #13*4		@ dummy PFA and dummy error code
 	sub	sp, sp, #8
 	mov	lr, pc
 	ldr	pc, 1f
@@ -126,7 +122,7 @@ hyp_trap_entry:
 fast_ret_from_irq:
 	ldmia	sp, {r0 - r12}		@ Restore user state
 	disable_irqs
-	add	sp, sp, #(13*4)
+	add	sp, sp, #13*4
 GEN_IRET
 1:	.word arm_esr_entry
 

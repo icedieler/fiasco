@@ -86,13 +86,6 @@ public:
   bool is_sigma0() const override { return true; }
 };
 
-/**
- * Ram_quota is abstract.
- */
-class Test_fake_factory : public Ram_quota
-{
-};
-
 //---------------------------------------------------------------------------
 IMPLEMENTATION:
 
@@ -109,7 +102,7 @@ Test_s0_space::v_fabricate(Mem_space::Vaddr address,
     *order = Mem_space::Page_order(Config::SUPERPAGE_SHIFT);
   *phys = cxx::mask_lsb(Virt_addr(address), *order);
   if (attr)
-    *attr = Mem_space::Attr(L4_fpage::Rights::URWX());
+    *attr = Mem_space::Attr::space_local(L4_fpage::Rights::URWX());
 
   return true;
 }

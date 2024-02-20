@@ -144,7 +144,7 @@ Mem_space::regular_tlb_type()
 //we flush tlb in htab implementation
 IMPLEMENT static inline NEEDS["mem_unit.h"]
 void
-Mem_space::tlb_flush(bool = false)
+Mem_space::tlb_flush_current_cpu()
 {
   //Mem_unit::tlb_flush();
 }
@@ -264,14 +264,12 @@ Mem_space::virt_to_phys(Address virt) const
   return dir()->virt_to_phys(virt);
 }
 
-PUBLIC inline
+IMPLEMENT_OVERRIDE inline
 Address
 Mem_space::pmem_to_phys(Address virt) const
 {
   return virt_to_phys(virt);
 }
-
-
 
 /** Look up a page-table entry.
     @param virt Virtual address for which we try the look up.
@@ -290,10 +288,9 @@ Mem_space::pmem_to_phys(Address virt) const
  */
 IMPLEMENT
 bool
-Mem_space::v_lookup(Vaddr virt, Phys_addr *phys, Page_order *order,
-		    Attr *page_attribs)
+Mem_space::v_lookup(Vaddr /* virt */, Phys_addr* /* phys */,
+                    Page_order* /* order */, Attr* /* page_attribs */)
 {
-  (void)virt; (void)phys; (void)order; (void)page_attribs;
   printf("Mem_space::v_lookup: ...\n");
   return false;
 }
@@ -309,10 +306,9 @@ Mem_space::v_lookup(Vaddr virt, Phys_addr *phys, Page_order *order,
  */
 IMPLEMENT
 L4_fpage::Rights
-Mem_space::v_delete(Vaddr virt, Page_order size,
-		    L4_fpage::Rights page_attribs)
+Mem_space::v_delete(Vaddr /* virt */, Page_order /* size */,
+                    L4_fpage::Rights /* page_attribs */)
 {
-  (void)virt; (void)size; (void)page_attribs;
   printf("Mem_space::v_delete: ...\n");
   return page_attribs;
 }

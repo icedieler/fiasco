@@ -13,9 +13,6 @@ public:
 private:
   class Lock_n_ptr : public Inner_lock
   {
-    static_assert(__alignof__(Queue_item) >= 8,
-                  "Lock_n_ptr uses 3 LSBs of item pointer");
-
   public:
     Queue_item *item() const
     { return get_unused(); }
@@ -42,10 +39,6 @@ IMPLEMENTATION:
 
 #include "assert.h"
 #include "std_macros.h"
-
-PUBLIC inline
-Queue::Queue()
-{ _m.head().init(); }
 
 PUBLIC inline
 Queue::Inner_lock *

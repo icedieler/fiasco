@@ -104,7 +104,7 @@ public:
 
   struct Cbaser
   {
-    Unsigned64 raw;
+    Unsigned64 raw = 0;
     Cbaser() = default;
     explicit Cbaser(Unsigned64 v) : raw(v) {}
     CXX_BITFIELD_MEMBER          ( 0,  7, size, raw);
@@ -116,7 +116,7 @@ public:
 
   struct Baser
   {
-    Unsigned64 raw;
+    Unsigned64 raw = 0;
     Baser() = default;
     explicit Baser(Unsigned64 v) : raw(v) {}
     CXX_BITFIELD_MEMBER          ( 0,  7, size, raw);
@@ -149,7 +149,7 @@ public:
 
   struct L1_entry
   {
-    Unsigned64 raw;
+    Unsigned64 raw = 0;
     L1_entry() = default;
     explicit L1_entry(Unsigned64 v) : raw(v) {}
     CXX_BITFIELD_MEMBER_UNSHIFTED(12, 51, pa, raw);
@@ -230,7 +230,7 @@ public:
   class Lpi
   {
   public:
-    Lpi() : lock(Spin_lock<>::Unlocked) { reset(); }
+    Lpi() { reset(); }
 
     // Index of this LPI, assigned by the MSI interrupt controller.
     unsigned index;
@@ -300,10 +300,7 @@ public:
   class Cmd
   {
   private:
-    Unsigned64 raw0 = 0;
-    Unsigned64 raw1 = 0;
-    Unsigned64 raw2 = 0;
-    Unsigned64 raw3 = 0;
+    Unsigned64 raw[4] = { 0 };
 
   public:
     enum : unsigned { Size = GITS_cmd_queue_entry_size };
@@ -323,17 +320,17 @@ public:
     Cmd() = default;
     explicit Cmd(Op cmd_op) { op() = cmd_op; };
 
-    CXX_BITFIELD_MEMBER          ( 0,  7, op, raw0);
-    CXX_BITFIELD_MEMBER          (32, 63, dev_id, raw0);
+    CXX_BITFIELD_MEMBER          ( 0,  7, op, raw[0]);
+    CXX_BITFIELD_MEMBER          (32, 63, dev_id, raw[0]);
 
-    CXX_BITFIELD_MEMBER          ( 0, 31, event_id, raw1);
-    CXX_BITFIELD_MEMBER          (32, 63, intid, raw1);
-    CXX_BITFIELD_MEMBER          ( 0,  4, itt_size, raw1);
+    CXX_BITFIELD_MEMBER          ( 0, 31, event_id, raw[1]);
+    CXX_BITFIELD_MEMBER          (32, 63, intid, raw[1]);
+    CXX_BITFIELD_MEMBER          ( 0,  4, itt_size, raw[1]);
 
-    CXX_BITFIELD_MEMBER          ( 0, 15, icid, raw2);
-    CXX_BITFIELD_MEMBER_UNSHIFTED(16, 50, rd_base, raw2);
-    CXX_BITFIELD_MEMBER_UNSHIFTED( 8, 51, itt_addr, raw2);
-    CXX_BITFIELD_MEMBER          (63, 63, valid, raw2);
+    CXX_BITFIELD_MEMBER          ( 0, 15, icid, raw[2]);
+    CXX_BITFIELD_MEMBER_UNSHIFTED(16, 50, rd_base, raw[2]);
+    CXX_BITFIELD_MEMBER_UNSHIFTED( 8, 51, itt_addr, raw[2]);
+    CXX_BITFIELD_MEMBER          (63, 63, valid, raw[2]);
 
     /**
      * This command retargets an already mapped event to a different
@@ -495,7 +492,7 @@ IMPLEMENT
 void
 Gic_its::Table::alloc(Reg r, Typer typer)
 {
-  Baser baser(r.read());
+  Baser baser(r.read_non_atomic());
 
   _type = static_cast<Baser::Type>(baser.type().get());
   _entry_size = baser.entry_size() + 1;
@@ -541,8 +538,8 @@ Gic_its::Table::alloc(Reg r, Typer typer)
   // alignment overhead low. But if the HW forces us to use larger pages so be
   // it...
   baser.page_size() = Baser::Page_size_4k;
-  r.write(baser.raw);
-  baser.raw = r.read();
+  r.write_non_atomic(baser.raw);
+  baser.raw = r.read_non_atomic();
   switch (baser.page_size())
     {
     case Baser::Page_size_4k:   _page_size =  0x1000; break;
@@ -637,10 +634,8 @@ Gic_its::init(Gic_cpu_v3 *gic_cpu, Address base, unsigned num_lpis)
   disable(base);
 
   _gic_cpu = gic_cpu;
-  _cmd_queue_lock.init();
-  _device_alloc_lock.init();
 
-  Typer typer(_its.read<Unsigned64>(GITS_TYPER));
+  Typer typer(_its.read_non_atomic<Unsigned64>(GITS_TYPER));
   _redist_pta = typer.pta();
   _max_device_id = (1ULL << (typer.dev_bits() + 1)) - 1;
   _itt_entry_size = typer.itt_entry_size() + 1;
@@ -704,7 +699,7 @@ Gic_its::init_cmd_queue()
   _cmd_queue.make_coherent();
   // GITS_CREADR is cleared to 0 when GITS_CBASER is written.
   _cmd_queue_write_off = 0;
-  _its.write<Unsigned64>(_cmd_queue_write_off, GITS_CWRITER);
+  _its.write_non_atomic<Unsigned64>(_cmd_queue_write_off, GITS_CWRITER);
 }
 
 PUBLIC
@@ -715,7 +710,7 @@ Gic_its::cpu_init(Cpu_number cpu, Gic_redist const &redist)
 
   Collection tmp;
   if (_redist_pta)
-    tmp.redist_base.phys_base_addr() = Gic_mem::to_phys(redist.get_base());
+    tmp.redist_base.phys_base_addr() = Kmem::kdir->virt_to_phys(redist.get_base());
   else
     tmp.redist_base.processor_nr() = redist.get_processor_nr();
   tmp.icid = cpu_index;
@@ -918,7 +913,7 @@ Gic_its::bind_lpi_to_device(Lpi &lpi, Unsigned32 src, Irq_mgr::Msi_info *inf)
 
   inf->data = lpi.event_id();
   // TODO: Must be mapped in the DMA space of the device if IOMMU is enabled.
-  inf->addr = Gic_mem::to_phys(_its.get_mmio_base()) + GITS_TRANSLATER;
+  inf->addr = Kmem::kdir->virt_to_phys(_its.get_mmio_base()) + GITS_TRANSLATER;
   return 0;
 }
 
@@ -1112,7 +1107,7 @@ Gic_its::Device::unbind_lpi(Lpi &lpi)
 }
 
 // ------------------------------------------------------------------------
-IMPLEMENTATION:
+IMPLEMENTATION [have_arm_gic_msi]:
 
 #include "mmio_register_block.h"
 #include "panic.h"

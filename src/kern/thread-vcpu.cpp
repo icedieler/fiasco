@@ -34,6 +34,7 @@ protected:
    *                            to be initialized.
    */
   void arch_init_vcpu_state(Vcpu_state *vcpu_state, bool ext);
+  void arch_vcpu_set_user_space();
 };
 
 IMPLEMENTATION:
@@ -52,6 +53,9 @@ void Thread::arch_init_vcpu_state(Vcpu_state *vcpu, bool /*ext*/)
   vcpu->version = Vcpu_arch_version;
 }
 
+IMPLEMENT_DEFAULT inline
+void Thread::arch_vcpu_set_user_space()
+{}
 
 PUBLIC inline NEEDS["task.h"]
 void
@@ -64,6 +68,8 @@ Thread::vcpu_set_user_space(Task *t)
   Task *old = static_cast<Task*>(_space.vcpu_user());
   _space.vcpu_user(t);
 
+  arch_vcpu_set_user_space();
+
   if (old && !old->dec_ref())
     delete old;
 }
@@ -72,7 +78,7 @@ PUBLIC inline NEEDS["logdefs.h", "vcpu.h"]
 bool
 Thread::vcpu_pagefault(Address pfa, Mword err, Mword ip)
 {
-  (void)ip;
+  static_cast<void>(ip);
   Vcpu_state *vcpu = vcpu_state().access();
   if (vcpu_pagefaults_enabled(vcpu))
     {

@@ -115,9 +115,8 @@ Vm::map_max_address() const
 
 PUBLIC inline
 void *
-Vm::operator new(size_t size, void *p) throw()
+Vm::operator new([[maybe_unused]] size_t size, void *p) noexcept
 {
-  (void)size;
   assert (size == sizeof(Vm));
   return p;
 }
@@ -138,9 +137,8 @@ IMPLEMENTATION [arm && arm_em_tz]:
 
 PUBLIC
 int
-Vm::resume_vcpu(Context *ctxt, Vcpu_state *vcpu, bool user_mode)
+Vm::resume_vcpu(Context *ctxt, Vcpu_state *vcpu, [[maybe_unused]] bool user_mode)
 {
-  (void)user_mode;
   assert(user_mode);
 
   assert(cpu_lock.test());
@@ -151,7 +149,7 @@ Vm::resume_vcpu(Context *ctxt, Vcpu_state *vcpu, bool user_mode)
       return -L4_err::EInval;
     }
 
-  Vm_state *state = reinterpret_cast<Vm_state *>(reinterpret_cast<char *>(vcpu) + 0x400);
+  Vm_state *state = offset_cast<Vm_state *>(vcpu, 0x400);
 
   state_for_dbg = state;
 
@@ -222,6 +220,7 @@ Vm::resume_vcpu(Context *ctxt, Vcpu_state *vcpu, bool user_mode)
 }
 
 namespace {
+
 static Kobject_iface * FIASCO_FLATTEN
 vm_factory(Ram_quota *q, Space *,
            L4_msg_tag t, Utcb const *u,
@@ -230,11 +229,13 @@ vm_factory(Ram_quota *q, Space *,
   return Task::create<Vm>(q, t, u, err);
 }
 
-static inline void __attribute__((constructor)) FIASCO_INIT
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(vm_register_factory)
 register_factory()
 {
   Kobject_iface::set_factory(L4_msg_tag::Label_vm, vm_factory);
 }
+
 }
 
 // --------------------------------------------------------------------------

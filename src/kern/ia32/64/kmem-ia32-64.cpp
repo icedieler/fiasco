@@ -1,11 +1,6 @@
-INTERFACE [amd64]:
-
-#include "simple_alloc.h"
-
 IMPLEMENTATION [amd64]:
 
-PRIVATE static inline FIASCO_INIT_CPU
+PRIVATE static inline FIASCO_INIT_CPU_SFX(init_cpu_arch)
 void
-Kmem::init_cpu_arch(Cpu &, cxx::Simple_alloc *)
+Kmem::init_cpu_arch(Cpu &, Lockless_alloc *)
 {}
-

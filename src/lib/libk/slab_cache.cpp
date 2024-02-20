@@ -44,6 +44,7 @@ public:
 protected:
   friend class Slab;
   friend class Slab_cache_tester;
+  friend struct Factory_test;
 
   // Low-level allocator functions:
 
@@ -152,7 +153,7 @@ Slab::in_use() const
 
 PUBLIC
 inline void *
-Slab::operator new(size_t, void *block) throw()
+Slab::operator new(size_t, void *block) noexcept
 {
   // slabs must be size-aligned so that we can compute their addresses
   // from element addresses
@@ -171,8 +172,6 @@ Slab_cache::Slab_cache(unsigned elem_size,
   : _entry_size(entry_size(elem_size, alignment)), _num_empty(0),
     _name (name)
 {
-  lock.init();
-
   for (
       _slab_size = min_size;
       (_slab_size - sizeof(Slab)) / _entry_size < 8
@@ -193,7 +192,6 @@ Slab_cache::Slab_cache(unsigned long slab_size,
   : _slab_size(slab_size), _entry_size(entry_size(elem_size, alignment)),
     _num_empty(0), _name (name)
 {
-  lock.init();
   _elem_num = (_slab_size - sizeof(Slab)) / _entry_size;
 }
 
@@ -245,7 +243,7 @@ Slab_cache::alloc()	// request initialized member from cache
 	{
 	  guard.reset();
 
-	  char *m = (char*)block_alloc(_slab_size, _slab_size);
+	  char *m = static_cast<char*>(block_alloc(_slab_size, _slab_size));
 	  Slab *new_slab = 0;
 	  if (m)
 	    new_slab = new (m + _slab_size - sizeof(Slab)) Slab(_elem_num, _entry_size, m);
@@ -380,10 +378,10 @@ Slab_cache::reap()		// request that cache returns memory to system
   return sz;
 }
 
-// Debugging output
+// ------------------------------------------------------------------------
+IMPLEMENTATION[debug]:
 
 #include <cstdio>
-
 
 PUBLIC
 void

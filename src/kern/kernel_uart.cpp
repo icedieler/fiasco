@@ -18,6 +18,8 @@ INTERFACE [serial]:
 #include "std_macros.h"
 #include "pm.h"
 
+class Filter_console;
+
 /**
  * Glue between kernel and UART driver.
  */
@@ -26,10 +28,12 @@ EXTENSION class Kernel_uart : public Uart, public Pm_object
 private:
   /**
    * Prototype for the UART specific startup implementation.
-   * @param uart, the instantiation to start.
-   * @param port, the com port number.
+   *
+   * \param port    the COM port number.
+   * \param irq     the UART IRQ number.
+   * \param resume  true, if called during a wakeup from suspend.
    */
-  bool startup(unsigned port, int irq=-1);
+  bool startup(unsigned port, int irq, bool resume);
 
   static bool init_for_mode(Init_mode init_mode);
 };
@@ -62,6 +66,10 @@ Uart *
 Kernel_uart::uart()
 { return _kernel_uart; }
 
+PUBLIC static FIASCO_CONST
+Filter_console *
+Kernel_uart::fcon()
+{ return _fcon; }
 
 IMPLEMENT_DEFAULT inline
 bool
@@ -87,7 +95,7 @@ Kernel_uart::init(Init_mode init_mode = Init_before_mmu)
 
 PUBLIC
 void
-Kernel_uart::setup()
+Kernel_uart::setup(bool resume)
 {
   unsigned           n = Config::default_console_uart_baudrate;
   Uart::TransferMode m = Uart::MODE_8N1;
@@ -103,7 +111,7 @@ Kernel_uart::setup()
   if (Koptions::o()->opt(Koptions::F_uart_irq))
     i = Koptions::o()->uart.irqno;
 
-  if (!startup(p, i))
+  if (!startup(p, i, resume))
     printf("Comport/base 0x%04llx is not accepted by the uart driver!\n", p);
   else if (!change_mode(m, n))
     panic("Something is wrong with the baud rate (%u)!\n", n);
@@ -112,14 +120,13 @@ Kernel_uart::setup()
 IMPLEMENT
 Kernel_uart::Kernel_uart()
 {
-  setup();
+  setup(false);
   register_pm(Cpu_number::boot_cpu());
 }
 
 PUBLIC void
-Kernel_uart::pm_on_suspend(Cpu_number cpu) override
+Kernel_uart::pm_on_suspend([[maybe_unused]] Cpu_number cpu) override
 {
-  (void)cpu;
   assert (cpu == Cpu_number::boot_cpu());
 
   uart()->state(Console::DISABLED);
@@ -129,11 +136,10 @@ Kernel_uart::pm_on_suspend(Cpu_number cpu) override
 }
 
 PUBLIC void
-Kernel_uart::pm_on_resume(Cpu_number cpu) override
+Kernel_uart::pm_on_resume([[maybe_unused]] Cpu_number cpu) override
 {
-  (void)cpu;
   assert (cpu == Cpu_number::boot_cpu());
-  static_cast<Kernel_uart*>(Kernel_uart::uart())->setup();
+  static_cast<Kernel_uart*>(Kernel_uart::uart())->setup(true);
   uart()->state(Console::ENABLED);
 
   if(Config::serial_esc != Config::SERIAL_ESC_NOIRQ)
@@ -168,6 +174,7 @@ Kernel_uart::enable_rcv_irq()
     {
       uart_irq.unmask();
       uart()->enable_rcv_irq();
+      Vkey::enable_receive();
     }
 }
 

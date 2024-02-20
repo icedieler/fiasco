@@ -8,6 +8,7 @@ extern Static_object<Mapdb> mapdb_mem;
 IMPLEMENTATION:
 
 #include "config.h"
+#include "cpu.h"
 #include "mapdb.h"
 #include "mem_space.h"
 #include <minmax.h>
@@ -32,8 +33,8 @@ L4_error __attribute__((nonnull(1, 3)))
 mem_map(Space *from, L4_fpage const &fp_from,
         Space *to, L4_fpage const &fp_to, L4_msg_item control)
 {
-  assert_opt (from);
-  assert_opt (to);
+  assert(from);
+  assert(to);
 
   typedef Mem_space::V_pfn Pfn;
   typedef Mem_space::V_pfc Pfc;
@@ -56,7 +57,8 @@ mem_map(Space *from, L4_fpage const &fp_from,
   rcv_addr = cxx::mask_lsb(rcv_addr, ro);
   Mu::free_constraint(snd_addr, so, rcv_addr, ro, offs);
 
-  Mem_space::Attr attribs(fp_from.rights() | L4_fpage::Rights::U(), control.mem_type());
+  Mem_space::Attr attribs(fp_from.rights() | L4_fpage::Rights::U(),
+                          control.mem_type(), Page::Kern::None());
 
   Mu::Auto_tlb_flush<Mem_space> tlb;
 
@@ -64,20 +66,17 @@ mem_map(Space *from, L4_fpage const &fp_from,
                         from, from, snd_addr,
                         Pfc(1) << so, to, to,
                         rcv_addr, control.is_grant(), attribs, tlb,
-                        (Mem_space::Reap_list**)0);
+                        static_cast<Mem_space::Reap_list**>(nullptr));
 }
 
 /** Unmap the mappings in the region described by "fp" from the address
     space "space" and/or the address spaces the mappings have been
     mapped into.
-    @param space address space that should be flushed
-    @param fp    flexpage descriptor of address-space range that should
-                 be flushed
-    @param me_too If false, only flush recursive mappings.  If true,
-                 additionally flush the region in the given address space.
-    @param restriction Only flush specific task ID.
-    @param flush_mode determines which access privileges to remove.
-    @return combined (bit-ORed) access status of unmapped physical pages
+    \param space  address space that should be flushed
+    \param fp     flexpage descriptor of address-space range that should
+                  be flushed
+    \param mask   Flags for unmap operation
+    \return       combined (bit-ORed) access status of unmapped physical pages
 */
 L4_fpage::Rights __attribute__((nonnull(1)))
 mem_fpage_unmap(Space *space, L4_fpage fp, L4_map_mask mask)
@@ -92,8 +91,8 @@ mem_fpage_unmap(Space *space, L4_fpage fp, L4_map_mask mask)
   start = cxx::mask_lsb(start, o);
   Mu::Auto_tlb_flush<Mem_space> tlb;
   return unmap<Mem_space>(mapdb_mem.get(), space, space,
-               start, size,
-               fp.rights(), mask, tlb, (Mem_space::Reap_list**)0);
+               start, size, fp.rights(), mask, tlb,
+               static_cast<Mem_space::Reap_list**>(nullptr));
 }
 
 
@@ -113,7 +112,7 @@ init_mapdb_mem(Space *sigma0)
   Page_order const *ps = Mem_space::get_global_page_sizes();
   unsigned idx = 0;
   unsigned phys_bits(Cpu::boot_cpu()->phys_bits());
-  phys_bits = min(phys_bits, (unsigned)MWORD_BITS);
+  phys_bits = min<unsigned>(phys_bits, MWORD_BITS);
 
   Page_order last_bits(phys_bits);
 

@@ -9,7 +9,7 @@ class Dmar_space :
   public cxx::Dyn_castable<Dmar_space, Task>
 {
 public:
-  void tlb_flush(bool) override;
+  void tlb_flush_current_cpu() override;
   int bind_mmu(Iommu *mmu, Unsigned32 stream_id);
   int unbind_mmu(Iommu *mmu, Unsigned32 stream_id);
 
@@ -158,10 +158,10 @@ Dmar_space::v_insert(Mem_space::Phys_addr phys, Mem_space::Vaddr virt,
 
 PUBLIC
 L4_fpage::Rights
-Dmar_space::v_delete(Mem_space::Vaddr virt, Mem_space::Page_order order,
+Dmar_space::v_delete(Mem_space::Vaddr virt,
+                     [[maybe_unused]] Mem_space::Page_order order,
                      L4_fpage::Rights page_attribs) override
 {
-  (void) order;
   assert(cxx::is_zero(cxx::get_lsb(Virt_addr(virt), order)));
 
   auto i = _dmarpt->walk(virt);
@@ -203,9 +203,8 @@ Dmar_space::add_page_size(Mem_space::Page_order o)
 
 PUBLIC
 void *
-Dmar_space::operator new (size_t size, void *p) throw()
+Dmar_space::operator new ([[maybe_unused]] size_t size, void *p) noexcept
 {
-  (void)size;
   assert (size == sizeof (Dmar_space));
   return p;
 }
@@ -256,10 +255,13 @@ Dmar_space::pt_phys_addr() const
 }
 
 namespace {
-static inline void __attribute__((constructor)) FIASCO_INIT
+
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(dmar_space_register_factory)
 register_factory()
 {
   Kobject_iface::set_factory(L4_msg_tag::Label_dma_space,
                              &Task::generic_factory<Dmar_space>);
 }
+
 }

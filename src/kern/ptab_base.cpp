@@ -75,14 +75,14 @@ namespace Ptab
     static constexpr unsigned shift(unsigned level)
     {
       return (!level)
-        ? (unsigned)Traits::Shift
+        ? unsigned{Traits::Shift}
         : Next_level::shift(level - 1);
     }
 
     static constexpr unsigned size(unsigned level)
     {
       return (!level)
-        ? (unsigned)Traits::Size
+        ? unsigned{Traits::Size}
         : Next_level::size(level - 1);
     }
 
@@ -110,7 +110,7 @@ namespace Ptab
     static constexpr bool may_be_leaf(unsigned level)
     {
       return (!level)
-        ? (bool)Traits::May_be_leaf
+        ? bool{Traits::May_be_leaf}
         : Next_level::may_be_leaf(level - 1);
     }
 
@@ -141,7 +141,7 @@ namespace Ptab
     static unsigned idx(Address virt)
     {
       if (Mask)
-	return cxx::get_lsb(virt >> Shift, (Address)Size);
+	return cxx::get_lsb(virt >> Shift, Address{Size});
       else
 	return (virt >> Shift);
     }
@@ -198,8 +198,8 @@ namespace Ptab
       if (force_write_back)
         PTE_PTR::write_back(&_e[idx], &_e[e]);
 
-      start += (unsigned long)cnt << Traits::Shift;
-      size  -= (unsigned long)cnt << Traits::Shift;
+      start += static_cast<unsigned long>(cnt) << Traits::Shift;
+      size  -= static_cast<unsigned long>(cnt) << Traits::Shift;
     }
 
     template< typename _Alloc, typename MEM >
@@ -219,8 +219,8 @@ namespace Ptab
       if (force_write_back)
         PTE_PTR::write_back(&_e[idx], &_e[e]);
 
-      virt += (unsigned long)cnt << Traits::Shift;
-      size -= (unsigned long)cnt << Traits::Shift;
+      virt += static_cast<unsigned long>(cnt) << Traits::Shift;
+      size -= static_cast<unsigned long>(cnt) << Traits::Shift;
 
       return true;
     }
@@ -232,8 +232,8 @@ namespace Ptab
       if (cnt + idx > Vec::Length)
         cnt = Vec::Length - idx;
 
-      virt += (unsigned long)cnt << Traits::Shift;
-      size -= (unsigned long)cnt << Traits::Shift;
+      virt += static_cast<unsigned long>(cnt) << Traits::Shift;
+      size -= static_cast<unsigned long>(cnt) << Traits::Shift;
     }
 
     template< typename _Alloc, typename MEM >
@@ -291,9 +291,9 @@ namespace Ptab
       if (force_write_back)
         PTE_PTR::write_back(&le[0], &le[count]);
 
-      l_addr += (unsigned long)count << Traits::Shift;
-      r_addr += (unsigned long)count << Traits::Shift;
-      size -= (unsigned long)count << Traits::Shift;
+      l_addr += static_cast<unsigned long>(count) << Traits::Shift;
+      r_addr += static_cast<unsigned long>(count) << Traits::Shift;
+      size -= static_cast<unsigned long>(count) << Traits::Shift;
       return need_flush;
     }
   };
@@ -320,7 +320,7 @@ namespace Ptab
     template< typename _Alloc >
     Next *alloc_next(PTE_PTR e, _Alloc &&a, bool force_write_back)
     {
-      Next *n = (Next*)a.alloc(Bytes(sizeof(Next)));
+      Next *n = static_cast<Next*>(a.alloc(Bytes(sizeof(Next))));
       if (EXPECT_FALSE(!n))
         return 0;
 
@@ -356,7 +356,7 @@ namespace Ptab
         return e;
       else
         {
-          Next *n = (Next*)mem.phys_to_pmem(e.next_level());
+          Next *n = reinterpret_cast<Next*>(mem.phys_to_pmem(e.next_level()));
           return n->walk(virt, level - 1, force_write_back,
                          cxx::forward<_Alloc>(alloc),
                          cxx::forward<MEM>(mem));
@@ -383,20 +383,24 @@ namespace Ptab
           return;
         }
 
-      while (size)
+      if (!size)
+        return;
+
+      Address const table = start >> (Traits::Shift + Traits::Size);
+      do
         {
           PTE_PTR e(&_e[Vec::idx(start)], Depth);
 
           if (!e.is_valid() || e.is_leaf())
+            skip(start, size, level - 1);
+          else
             {
-              skip(start, size, level - 1);
-              continue;
+              Next *n = reinterpret_cast<Next*>(mem.phys_to_pmem(e.next_level()));
+              n->unmap(start, size, level - 1, force_write_back,
+                       cxx::forward<MEM>(mem));
             }
-
-          Next *n = (Next*)mem.phys_to_pmem(e.next_level());
-          n->unmap(start, size, level - 1, force_write_back,
-                   cxx::forward<MEM>(mem));
         }
+      while (size && table == (start >> (Traits::Shift + Traits::Size)));
     }
 
     template< typename _Alloc, typename MEM >
@@ -411,7 +415,11 @@ namespace Ptab
                                                   cxx::forward<_Alloc>(alloc),
                                                   cxx::forward<MEM>(mem));
 
-      while (size)
+      if (!size)
+        return true;
+
+      Address const table = virt >> (Traits::Shift + Traits::Size);
+      do
         {
           PTE_PTR e(&_e[Vec::idx(virt)], Depth);
           Next *n;
@@ -423,13 +431,13 @@ namespace Ptab
           else if (_Head::May_be_leaf && e.is_leaf())
             return false;
           else
-            n = (Next*)mem.phys_to_pmem(e.next_level());
+            n = reinterpret_cast<Next*>(mem.phys_to_pmem(e.next_level()));
 
           if (!n->map(phys, virt, size, attr, level - 1, force_write_back,
                       alloc, mem))
             return false;
         }
-
+      while (size && table == (virt >> (Traits::Shift + Traits::Size)));
       return true;
     }
 
@@ -452,7 +460,7 @@ namespace Ptab
           if (!e.is_valid() || (_Head::May_be_leaf && e.is_leaf()))
             continue;
 
-          Next *n = (Next*)mem.phys_to_pmem(e.next_level());
+          Next *n = reinterpret_cast<Next*>(mem.phys_to_pmem(e.next_level()));
           n->destroy(idx > idx_start ? 0 : start,
                      idx + 1 < idx_end ? (1UL << Traits::Shift)-1 : end,
                      start_level, end_level, alloc, mem);
@@ -509,9 +517,9 @@ namespace Ptab
                 return -1;
             }
           else
-            n = (Next*)mem.phys_to_pmem(l.next_level());
+            n = reinterpret_cast<Next*>(mem.phys_to_pmem(l.next_level()));
 
-          Next *rn = (Next*)mem.phys_to_pmem(r.next_level());
+          Next *rn = reinterpret_cast<Next*>(mem.phys_to_pmem(r.next_level()));
 
           int err = n->sync(l_a, *rn, r_a, size, level - 1, force_write_back, alloc, mem);
           if (err > 0)
@@ -615,6 +623,17 @@ namespace Ptab
     enum
     {
       Base_shift = L0::Base_shift,
+    };
+
+    enum : Address
+    {
+      // Attention: Must use 64 bit arithmetic because some page tables (namely
+      // ia32 EPT) have more virtual address bits than what fits into the
+      // Address type.
+      Max_addr = static_cast<Address>(~0ULL >> (sizeof(unsigned long long) * 8
+                                      - L0::Base_shift
+                                      - L0::Shift
+                                      - L0::Size)),
     };
 
   private:
@@ -742,6 +761,11 @@ namespace Ptab
     {
       Address va = _Addr::val(virt);
       unsigned long sz = _Addr::val(size);
+
+      [[maybe_unused]] unsigned long mask = (1UL << Levels::shift(level)) - 1;
+      assert(!(va & mask));
+      assert(!(sz & mask));
+
       _base.unmap(va, sz, level, force_write_back, cxx::forward<MEM>(mem));
     }
 
@@ -753,6 +777,12 @@ namespace Ptab
     {
       Address va = _Addr::val(virt);
       unsigned long sz = _Addr::val(size);
+
+      [[maybe_unused]] unsigned long mask = (1UL << Levels::shift(level)) - 1;
+      assert(!(va & mask));
+      assert(!((phys >> Base_shift) & mask));
+      assert(!(sz & mask));
+
       return _base.map(phys, va, sz, attr, level, force_write_back,
                        cxx::forward<_Alloc>(alloc), cxx::forward<MEM>(mem));
     }

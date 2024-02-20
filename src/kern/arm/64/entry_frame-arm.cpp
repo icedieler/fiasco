@@ -85,9 +85,6 @@ public:
       (  reinterpret_cast<char *>(sf)
        - reinterpret_cast<intptr_t>(&reinterpret_cast<Return_frame *>(0)->r[0]));
   }
-
-  Mword ip_syscall_page_user() const
-  { return pc; }
 };
 
 class Entry_frame : public Return_frame {};
@@ -109,9 +106,8 @@ Return_frame::check_valid_user_psr() const
 { return (pstate & 0x1c) != 0x08; }
 
 // ------------------------------------------------------
-IMPLEMENTATION [arm && 64bit]:
+IMPLEMENTATION [arm && 64bit && !cpu_virt]:
 
-#include <cstdio>
 #include "processor.h"
 #include "mem.h"
 
@@ -128,11 +124,26 @@ Entry_frame::copy_and_sanitize(Entry_frame const *src)
   pstate |= Proc::Status_mode_user | Proc::Status_always_mask;
 }
 
+// ------------------------------------------------------
+IMPLEMENTATION [arm && 64bit]:
+
+#include <cstdio>
+#include "processor.h"
+
 PUBLIC inline NEEDS["processor.h"]
 void
 Return_frame::psr_set_mode(unsigned char m)
 {
   pstate = (pstate & ~Proc::Status_mode_mask) | m;
+}
+
+PUBLIC inline NEEDS[Return_frame::check_valid_user_psr]
+Mword
+Return_frame::ip_syscall_user() const
+{
+  return check_valid_user_psr()
+    ? r[30] // Assuming user entered the kernel by __l4_sys_syscall().
+    : ip(); // Kernel IP.
 }
 
 PUBLIC

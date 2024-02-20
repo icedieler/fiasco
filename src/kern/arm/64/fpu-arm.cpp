@@ -213,7 +213,8 @@ Fpu_state_simd::save()
 {
   Mword fpcr;
   Mword fpsr;
-  asm volatile("stp     q0, q1,   [%[s], #16 *  0]        \n"
+  asm volatile(".arch_extension fp                        \n"
+               "stp     q0, q1,   [%[s], #16 *  0]        \n"
                "stp     q2, q3,   [%[s], #16 *  2]        \n"
                "stp     q4, q5,   [%[s], #16 *  4]        \n"
                "stp     q6, q7,   [%[s], #16 *  6]        \n"
@@ -243,7 +244,8 @@ IMPLEMENT inline
 void
 Fpu_state_simd::restore() const
 {
-  asm volatile("ldp     q0, q1,   [%[s], #16 *  0]        \n"
+  asm volatile(".arch_extension fp                        \n"
+               "ldp     q0, q1,   [%[s], #16 *  0]        \n"
                "ldp     q2, q3,   [%[s], #16 *  2]        \n"
                "ldp     q4, q5,   [%[s], #16 *  4]        \n"
                "ldp     q6, q7,   [%[s], #16 *  6]        \n"
@@ -261,8 +263,8 @@ Fpu_state_simd::restore() const
                "ldp     q30, q31, [%[s], #16 * 30]        \n"
                "msr     fpcr, %[fpcr]                     \n"
                "msr     fpsr, %[fpsr]                     \n"
-               : : [fpcr] "r" ((Mword)_fpcr),
-                   [fpsr] "r" ((Mword)_fpsr),
+               : : [fpcr] "r" (Mword{_fpcr}),
+                   [fpsr] "r" (Mword{_fpsr}),
                    [s] "r" (_state),
                    "m" (_state));
 }

@@ -9,14 +9,40 @@ INTERFACE:
 class Irq_base;
 class Irq_chip;
 
+INTERFACE [cascade_irq]:
+
+/**
+ * When cascading IRQ controllers, we need to ack upstream IRQs before
+ * activating the handler thread and after possibly masking the IRQ at the
+ * downstream controller. To do this we use a linked list of upstream IRQ
+ * objects on the callstack of the handler to describe the upstream IRQs to ack.
+ */
 class Upstream_irq
 {
 private:
   Irq_chip *const _c;
   Mword const _p;
   Upstream_irq const *const _prev;
-
 };
+
+INTERFACE [!cascade_irq]:
+
+/**
+ * The Upstream_irq mechanism is only required and used for cascading IRQ
+ * controllers. So in case that feature is disabled, reduce Upstream_irq to a
+ * immediately apparent nop, which is only a placeholder for generic IRQ
+ * handling code.
+ */
+class Upstream_irq
+{
+public:
+  // Upstream_irq cannot be instantiated.
+  Upstream_irq() = delete;
+  static void ack(Upstream_irq const *) {}
+};
+
+// --------------------------------------------------------------------------
+INTERFACE:
 
 /**
  * Abstraction for an IRQ controller chip.
@@ -106,15 +132,32 @@ public:
 };
 
 /**
- * Abstract IRQ controller chip that is visble as part of the
+ * Abstract IRQ controller chip that is visible as part of the
  * Icu to the user.
  */
 class Irq_chip_icu : public Irq_chip
 {
 public:
+  /** Reserve the given pin of the ICU making it impossible to attach an IRQ. */
   virtual bool reserve(Mword pin) = 0;
+
+  /**
+   * Attach an IRQ object to a given pin of the ICU.
+   *
+   * \param irq   The IRQ.
+   * \param pin   The pin to attach the IRQ to.
+   * \param init  By default, perform the pin allocation and the following
+   *              initialization: Adjust the trigger mode of the IRQ to the pin
+   *              of the chip, mask/unmask the pin according to the IRQ`s masked
+   *              state and set the target CPU of the pin.
+   *              If this parameter is set to `false`, skip the initialization.
+   */
   virtual bool alloc(Irq_base *irq, Mword pin, bool init = true) = 0;
+
+  /** Return the IRQ object attached to a given pin of the ICU. */
   virtual Irq_base *irq(Mword pin) const = 0;
+
+  /** Return the number of pins provided by this ICU. */
   virtual unsigned nr_irqs() const = 0;
   virtual ~Irq_chip_icu() = 0;
 };
@@ -138,7 +181,7 @@ public:
     F_enabled = 1, // This flags needs to be set atomically.
   };
 
-  Irq_base() : _flags(0), _irq_lock(Spin_lock<>::Unlocked), _next(0)
+  Irq_base() : _flags(0), _next(0)
   {
     Irq_chip_soft::sw_chip.bind(this, 0, true);
     mask();
@@ -150,7 +193,12 @@ public:
   Irq_chip *chip() const { return _chip; }
   Spin_lock<> *irq_lock() { return &_irq_lock; }
 
-  void mask() { if (!__mask()) _chip->mask(_pin); }
+  void mask()
+  {
+    if (!__mask())
+      _chip->mask(_pin);
+  }
+
   void mask_and_ack()
   {
     if (!__mask())
@@ -159,7 +207,12 @@ public:
       _chip->ack(_pin);
   }
 
-  void unmask() { if (__unmask()) _chip->unmask(_pin); }
+  void unmask()
+  {
+    if (__unmask())
+      _chip->unmask(_pin);
+  }
+
   void ack() { _chip->ack(_pin); }
 
   void set_cpu(Cpu_number cpu) { _chip->set_cpu(_pin, cpu); }
@@ -251,6 +304,21 @@ char const *
 Irq_chip_soft::chip_type() const override
 { return "Soft"; }
 
+//--------------------------------------------------------------------------
+IMPLEMENTATION [cascade_irq]:
+
+PUBLIC inline explicit
+Upstream_irq::Upstream_irq(Irq_base const *b, Upstream_irq const *prev)
+: _c(b->chip()), _p(b->pin()), _prev(prev)
+{}
+
+PUBLIC static inline
+void
+Upstream_irq::ack(Upstream_irq const *ui)
+{
+  for (Upstream_irq const *c = ui; c; c = c->_prev)
+    c->_c->ack(c->_p);
+}
 
 //--------------------------------------------------------------------------
 IMPLEMENTATION:
@@ -267,30 +335,27 @@ IMPLEMENT inline Irq_chip::~Irq_chip() {}
 IMPLEMENT inline Irq_chip_icu::~Irq_chip_icu() {}
 IMPLEMENT inline Irq_base::~Irq_base() {}
 
-PUBLIC inline explicit
-Upstream_irq::Upstream_irq(Irq_base const *b, Upstream_irq const *prev)
-: _c(b->chip()), _p(b->pin()), _prev(prev)
-{}
-
-PUBLIC static inline
-void
-Upstream_irq::ack(Upstream_irq const *ui)
-{
-  for (Upstream_irq const *c = ui; c; c = c->_prev)
-    c->_c->ack(c->_p);
-}
-
 /**
- * \pre `irq->irq_lock()` must be held
+ * Bind the passed IRQ object to this IRQ controller chip.
+ *
+ * \param irq        The IRQ object to bind.
+ * \param pin        The pin of this IRQ controller chip.
+ * \param ctor_only  On `false` (default), set the IRQ mode (edge/level) as
+ *                   implemented by the IRQ controller chip and mask/unmask the
+ *                   IRQ at the chip according to the current state of the IRQ
+ *                   object.
+ *                   On `true`, skip these efforts.
+ *
+ * \pre `irq->irq_lock()` must be held.
  */
 PUBLIC inline
 void
-Irq_chip::bind(Irq_base *irq, Mword pin, bool ctor = false)
+Irq_chip::bind(Irq_base *irq, Mword pin, bool ctor_only = false)
 {
   irq->_pin = pin;
   irq->_chip = this;
 
-  if (ctor)
+  if (ctor_only)
     return;
 
   irq->switch_mode(is_edge_triggered(pin));
@@ -302,7 +367,14 @@ Irq_chip::bind(Irq_base *irq, Mword pin, bool ctor = false)
 }
 
 /**
- * \pre `irq->irq_lock()` must be held
+ * Unbind the passed IRQ object from this IRQ controller chip by binding the IRQ
+ * object to the `sw_chip` chip.
+ *
+ * \param irq  The IRQ object to unbind.
+ *
+ * \see Irq_base::Irq_base()
+ *
+ * \pre `irq->irq_lock()` must be held.
  */
 IMPLEMENT inline
 void
@@ -391,12 +463,13 @@ Irq_base::Irq_log::print(String_buffer *buf) const
 {
   Kobject_dbg::Const_iterator irq = Kobject_dbg::pointer_to_obj(obj);
 
-  buf->printf("0x%lx/%lu @ chip %s(%p) ", pin, pin, chip->chip_type(), chip);
+  buf->printf("0x%lx/%lu @ chip %s(%p) ", pin, pin, chip->chip_type(),
+              static_cast<void *>(chip));
 
   if (irq != Kobject_dbg::end())
     buf->printf("D:%lx", irq->dbg_id());
   else
-    buf->printf("irq=%p", obj);
+    buf->printf("irq=%p", static_cast<void *>(obj));
 }
 
 PUBLIC inline NEEDS["logdefs.h"]

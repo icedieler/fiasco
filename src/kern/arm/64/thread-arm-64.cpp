@@ -30,26 +30,6 @@ void
 Thread::user_ip(Mword ip)
 { regs()->ip(ip); }
 
-IMPLEMENT_OVERRIDE inline
-bool
-Thread::pagein_tcb_request(Return_frame *regs)
-{
-  // Counterpart: Mem_layout::read_special_safe()
-  assert (!regs->esr.pf_write()); // must be a read
-  assert (regs->esr.il());        // must be a 32bit wide insn
-  // we assume the instruction is a ldr with the target register
-  // in the lower 5 bits
-  unsigned rt = *(Mword*)regs->pc & 0x1f;
-
-  // skip faulting instruction
-  regs->pc += 4;
-  // tell program that a pagefault occurred we cannot handle
-  regs->psr |= 0x40000000;	// set zero flag in psr
-  regs->r[rt] = 0;
-
-  return true;
-}
-
 PUBLIC static inline void FIASCO_NORETURN
 Thread::arm_fast_exit(void *sp, void *pc, void *arg)
 {
@@ -140,29 +120,18 @@ Thread::handle_svc(Trap_state *ts)
         {
           state_del_dirty(Thread_dis_alien);
           do_syscall();
-
           ts->error_code |= 1 << 16; // ts->esr().alien_after_syscall() = 1;
         }
+      else
+        // Before syscall was executed. Adjust PC to be on SVC/HVC insn so that
+        // the instruction can be restarted.
+        ts->pc -= Arm_esr(ts->error_code).il() ? 4 : 2;
 
       slowtrap_entry(ts);
       return;
     }
 
   do_syscall();
-}
-
-PRIVATE static inline
-bool
-Thread::is_syscall_pc(Address)
-{
-  return false; //Address(-0x0c) <= pc && pc <= Address(-0x08);
-}
-
-PRIVATE static inline
-Mword
-Thread::get_lr_for_mode(Return_frame const *rf)
-{
-  return rf->r[30];
 }
 
 PRIVATE static inline NEEDS[Thread::set_tpidruro, Thread::set_tpidrurw,
@@ -175,12 +144,12 @@ Thread::copy_utcb_to_ts(L4_msg_tag const &tag, Thread *snd, Thread *rcv,
   if (EXPECT_FALSE(tag.words() < (sizeof(Trex) / sizeof(Mword))))
     return true;
 
-  Trap_state *ts = (Trap_state*)rcv->_utcb_handler;
+  Trap_state *ts = static_cast<Trap_state*>(rcv->_utcb_handler);
   Utcb *snd_utcb = snd->utcb().access();
 
   Trex const *r = reinterpret_cast<Trex const *>(snd_utcb->values);
   // this skips the eret/continuation work already
-  ts->copy_and_sanitize(&r->s);
+  rcv->copy_and_sanitize_trap_state(ts, &r->s);
   rcv->set_tpidruro(r);
   rcv->set_tpidrurw(r);
 
@@ -201,7 +170,7 @@ bool FIASCO_WARN_RESULT
 Thread::copy_ts_to_utcb(L4_msg_tag const &, Thread *snd, Thread *rcv,
                         L4_fpage::Rights rights)
 {
-  Trap_state *ts = (Trap_state*)snd->_utcb_handler;
+  Trap_state *ts = static_cast<Trap_state*>(snd->_utcb_handler);
 
   {
     auto guard = lock_guard(cpu_lock);
@@ -221,7 +190,7 @@ Thread::copy_ts_to_utcb(L4_msg_tag const &, Thread *snd, Thread *rcv,
 
 PUBLIC static inline bool Thread::is_fsr_exception(Arm_esr) { return false; }
 PUBLIC static inline bool Thread::is_debug_exception(Arm_esr) { return false; }
-PUBLIC static inline void Thread::handle_debug_exception(Trap_state *) {}
+PUBLIC inline void Thread::handle_debug_exception(Trap_state *) {}
 PUBLIC static inline bool Thread::is_debug_exception_fsr(Mword) { return false; }
 
 // ------------------------------------------------------------------------
@@ -424,3 +393,25 @@ Arm_vtimer_ppi::mask()
                "msr cntv_ctl_el0, %0\n" : "=r" (v));
 }
 
+//--------------------------------------------------------------------------
+IMPLEMENTATION [arm && 64bit && virt_obj_space]:
+
+IMPLEMENT_OVERRIDE inline
+bool
+Thread::pagein_tcb_request(Return_frame *regs)
+{
+  // Counterpart: Mem_layout::read_special_safe()
+  assert (!regs->esr.pf_write()); // must be a read
+  assert (regs->esr.il());        // must be a 32bit wide insn
+  // we assume the instruction is a ldr with the target register
+  // in the lower 5 bits
+  unsigned rt = *reinterpret_cast<Mword*>(regs->pc) & 0x1f;
+
+  // skip faulting instruction
+  regs->pc += 4;
+  // tell program that a pagefault occurred we cannot handle
+  regs->psr |= 0x40000000;	// set zero flag in psr
+  regs->r[rt] = 0;
+
+  return true;
+}

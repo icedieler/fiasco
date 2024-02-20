@@ -99,7 +99,6 @@ Context::vcpu_enter_kernel_mode(Vcpu_state *vcpu)
   unsigned s = state();
   if (EXPECT_FALSE(s & Thread_vcpu_enabled))
     {
-      state_del_dirty(Thread_vcpu_user);
       vcpu->_saved_state = vcpu->state;
       Mword flags = Vcpu_state::F_traps
 	            | Vcpu_state::F_user_mode;
@@ -110,25 +109,28 @@ Context::vcpu_enter_kernel_mode(Vcpu_state *vcpu)
       else
 	vcpu->_sp = regs()->sp();
 
-      if (_space.user_mode())
+      if (s & Thread_vcpu_user)
 	{
-	  _space.user_mode(false);
-	  state_del_dirty(Thread_vcpu_fpu_disabled);
+          state_del_dirty(Thread_vcpu_user | Thread_vcpu_fpu_disabled);
 
           bool load_cpu_state = current() == this;
-
           arch_load_vcpu_kern_state(vcpu, load_cpu_state);
           vcpu_pv_switch_to_kernel(vcpu, load_cpu_state);
 
           if (load_cpu_state)
-            {
-              vcpu_enable_fpu_if_disabled(s);
+            vcpu_enable_fpu_if_disabled(s);
 
-              // Space::switchin_context() may optimize the switch of a thread
-              // in vCPU user mode to vCPU kernel mode.
-              space()->switchin_context(vcpu_user_space(),
-                                        Mem_space::Vcpu_user_to_kern);
-              return true;
+          if (_space.user_mode())
+            {
+              _space.user_mode(false);
+              if (load_cpu_state)
+                {
+                  // Space::switchin_context() may optimize the switch of a
+                  // thread in vCPU user mode to vCPU kernel mode.
+                  space()->switchin_context(vcpu_user_space(),
+                                            Mem_space::Vcpu_user_to_kern);
+                  return true;
+                }
             }
         }
     }
@@ -204,11 +206,12 @@ Context::Vcpu_log::print(String_buffer *buf) const
       break;
     case 1:
       buf->printf("ipc from D:%lx task=D:%lx sp=%lx",
-                  Kobject_dbg::pointer_to_id((Kobject*)ip), state, sp);
+                  Kobject_dbg::pointer_to_id(reinterpret_cast<Kobject*>(ip)),
+                  state, sp);
       break;
     case 2:
       buf->printf("exc #%x err=%lx pc=%lx sp=%lx state=%lx task=D:%lx",
-                  (unsigned)trap, err, ip, sp, state, space);
+                  trap, err, ip, sp, state, space);
       break;
     case 3:
       buf->printf("pf  pc=%lx pfa=%lx err=%lx state=%lx task=D:%lx",

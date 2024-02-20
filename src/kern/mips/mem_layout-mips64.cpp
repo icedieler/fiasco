@@ -21,11 +21,6 @@ public:
 
     Exception_base = 0xffffffff80000000,
   };
-
-  static inline unsigned long round_page(unsigned long addr)
-  { return (addr + Config::PAGE_SIZE - 1) & ~(Config::PAGE_SIZE-1); }
-  static inline unsigned long trunc_page(unsigned long addr)
-  { return addr & ~(Config::PAGE_SIZE-1); }
 };
 
 
@@ -37,7 +32,7 @@ bool
 Mem_layout::below_512mb(Address addr)
 { return !(addr & 0xffffffffe0000000); }
 
-PUBLIC static inline
+IMPLEMENT static inline
 Address
 Mem_layout::phys_to_pmem(Address addr)
 { return addr + KSEG0; }
@@ -62,15 +57,10 @@ Mem_layout::ioremap_nocache(Address phys_addr, Address size)
   return 0;
 }
 
-PUBLIC static inline
+IMPLEMENT static inline
 Address
 Mem_layout::pmem_to_phys(Address addr)
 { return addr - KSEG0; }
-
-PUBLIC static inline
-Address
-Mem_layout::pmem_to_phys(void const *ptr)
-{ return pmem_to_phys((Address)ptr); }
 
 PUBLIC static inline
 bool

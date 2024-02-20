@@ -66,9 +66,10 @@ private:
   typedef cxx::D_list_cyclic<Prio_list_elem> S_list;
 
   /**
-   * Priority, the higher the better.
+   * Priority, the higher the better. The priority is only used if this element
+     is actually part of a Prio_list.
    */
-  unsigned short _prio;
+  unsigned short _prio = 0;
 };
 
 
@@ -149,15 +150,17 @@ Prio_list::dequeue(Prio_list_elem *e, Prio_list_elem **next = 0)
       assert (S_list::in_list(e));
       // yes we are the head of our priority
       if (S_list::has_sibling(e))
-	{
-	  P_list::replace(e, *++S_list::iter(e));
-	  if (next) *next = *++S_list::iter(e);
-	}
+        {
+          P_list::replace(e, *++S_list::iter(e));
+          if (next)
+            *next = *++S_list::iter(e);
+        }
       else
-	{
-	  if (next) *next = *++P_list::iter(e);
-	  P_list::remove(e);
-	}
+        {
+          if (next)
+            *next = *++P_list::iter(e);
+          P_list::remove(e);
+        }
     }
   else
     {
@@ -168,7 +171,7 @@ Prio_list::dequeue(Prio_list_elem *e, Prio_list_elem **next = 0)
 }
 
 PUBLIC inline
-Iterable_prio_list::Iterable_prio_list() : _cursor(0), _lock(Spin_lock<>::Unlocked) {}
+Iterable_prio_list::Iterable_prio_list() : _cursor(0) {}
 
 /**
  * Dequeue a given element from the list.

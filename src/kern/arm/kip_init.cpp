@@ -16,6 +16,7 @@ IMPLEMENTATION [arm]:
 
 #include "config.h"
 #include "mem_layout.h"
+#include "mem_space.h"
 #include "mem_unit.h"
 #include "timer.h"
 
@@ -55,7 +56,7 @@ namespace KIP_namespace
 	/* 50/A0  */ 0, (sizeof(Kip) << (sizeof(Mword)*4)) | Num_mem_descs, {},
 	/* 60/C0  */ {},
 	/* A0/140 */ 0, 0, 0, 0,
-	/* B8/160 */ {},
+	/* B8/160 */ 0, {},
 	/* E0/1C0 */ 0, 0, {},
 	/* F0/1D0 */ {"", 0, {0}},
       },
@@ -73,7 +74,7 @@ void Kip_init::init()
   extern char my_kernel_info_page[];
   Kip *kinfo = reinterpret_cast<Kip*>(my_kernel_info_page);
   Kip::init_global_kip(kinfo);
-  kinfo->add_mem_region(Mem_desc(0, Mem_layout::User_max,
+  kinfo->add_mem_region(Mem_desc(0, Mem_space::user_max(),
                         Mem_desc::Conventional, true));
   init_syscalls(kinfo);
 }
@@ -94,10 +95,10 @@ Kip_init::init_kip_clock()
 
   K *k = reinterpret_cast<K *>(Kip::k());
 
-  *(Mword*)(k->b + 0x970) = Timer::get_scaler_ts_to_us();
-  *(Mword*)(k->b + 0x978) = Timer::get_shift_ts_to_us();
-  *(Mword*)(k->b + 0x9f0) = Timer::get_scaler_ts_to_ns();
-  *(Mword*)(k->b + 0x9f8) = Timer::get_shift_ts_to_ns();
+  *reinterpret_cast<Mword*>(k->b + 0x970) = Timer::get_scaler_ts_to_us();
+  *reinterpret_cast<Mword*>(k->b + 0x978) = Timer::get_shift_ts_to_us();
+  *reinterpret_cast<Mword*>(k->b + 0x9f0) = Timer::get_scaler_ts_to_ns();
+  *reinterpret_cast<Mword*>(k->b + 0x9f8) = Timer::get_shift_ts_to_ns();
 
   memcpy(k->b + 0x900, kip_time_fn_read_us,
          kip_time_fn_read_us_end - kip_time_fn_read_us);
@@ -108,7 +109,7 @@ Kip_init::init_kip_clock()
 }
 
 //--------------------------------------------------------------
-IMPLEMENTATION[64bit && !cpu_virt]:
+IMPLEMENTATION[64bit]:
 
 PRIVATE static inline
 void
@@ -121,22 +122,6 @@ Kip_init::init_syscalls(Kip *kinfo)
   };
   K *k = reinterpret_cast<K *>(kinfo);
   k->w[0x800 / sizeof(Mword)] = 0xd65f03c0d4000001; // svc #0; ret
-}
-
-//--------------------------------------------------------------
-IMPLEMENTATION[64bit && cpu_virt]:
-
-PRIVATE static inline
-void
-Kip_init::init_syscalls(Kip *kinfo)
-{
-  union K
-  {
-    Kip k;
-    Mword w[0x1000 / sizeof(Mword)];
-  };
-  K *k = reinterpret_cast<K *>(kinfo);
-  k->w[0x800 / sizeof(Mword)] = 0xd65f03c0d4000002; // hvc #0; ret
 }
 
 //--------------------------------------------------------------

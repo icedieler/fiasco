@@ -1,11 +1,11 @@
 INTERFACE [arm && pic_gic]:
 
-#include "assert.h"
 #include "cpu.h"
 #include "kmem.h"
 #include "irq_chip_generic.h"
 #include "gic_dist.h"
 
+#include <cassert>
 #include <cstdio>
 
 class Gic : public Irq_chip_gen
@@ -182,7 +182,6 @@ IMPL *Gic_mixin<IMPL, CPU>::primary;
 // ------------------------------------------------------------------------
 IMPLEMENTATION [arm && pic_gic]:
 
-#include <cassert>
 #include <cstring>
 #include <cstdio>
 
@@ -192,7 +191,7 @@ IMPLEMENTATION [arm && pic_gic]:
 #include "processor.h"
 
 extern "C" void irq_handler()
-{ panic("INVALID IRQ HANDLER"); }
+{ panic("Invalid IRQ handler."); }
 
 PUBLIC inline
 unsigned
@@ -307,7 +306,7 @@ Gic::set_irq_handler(void (*irq_handler)())
 }
 
 // ------------------------------------------------------------------------
-IMPLEMENTATION [arm && pic_gic && cascade_irq]:
+IMPLEMENTATION [arm && pic_gic && cascade_irq && pf_realview]:
 
 #include "cascade_irq.h"
 

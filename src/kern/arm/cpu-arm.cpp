@@ -245,7 +245,7 @@ static void modify_cpuectl(Unsigned64 mask, Unsigned64 value)
 {
   Mword ectlh, ectll;
   asm volatile ("mrrc p15, 1, %0, %1, c15" : "=r"(ectll), "=r"(ectlh));
-  Unsigned64 ectl = (((Unsigned64)ectlh) << 32) | ectll;
+  Unsigned64 ectl = (Unsigned64{ectlh} << 32) | ectll;
   if ((ectl & mask) != value)
     asm volatile ("mcrr p15, 1, %0, %1, c15" : :
                   "r"((ectll & mask) | value),
@@ -454,21 +454,6 @@ IMPLEMENT_DEFAULT inline
 void
 Cpu::init_hyp_mode()
 {}
-
-//---------------------------------------------------------------------------
-IMPLEMENTATION [arm && !arm_lpae]:
-
-PUBLIC static inline unsigned Cpu::phys_bits() { return 32; }
-
-//---------------------------------------------------------------------------
-IMPLEMENTATION [arm && arm_lpae && !arm_pt_48]:
-
-PUBLIC static inline unsigned Cpu::phys_bits() { return 40; }
-
-//---------------------------------------------------------------------------
-IMPLEMENTATION [arm && arm_lpae && arm_pt_48]:
-
-PUBLIC static inline unsigned Cpu::phys_bits() { return 48; }
 
 //---------------------------------------------------------------------------
 IMPLEMENTATION [arm && !arm_v6plus]:

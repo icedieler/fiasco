@@ -324,8 +324,8 @@ private:
   char bts_active;
 
   Gdt *gdt;
-  Tss *tss;
-  Tss *tss_dbf;
+  Tss *_tss;
+  Tss *_tss_dbf;
 
 public:
   Lbr lbr_type() const { return _lbr; }
@@ -334,8 +334,9 @@ public:
   bool bts_status() const { return bts_active; }
   bool btf_status() const { return btf_active; }
 
-  Gdt* get_gdt() const { return gdt; }
-  Tss* get_tss() const { return tss; }
+  Gdt *get_gdt() const { return gdt; }
+  Tss *get_tss() const { return _tss; }
+
   void set_gdt() const
   {
     Pseudo_descriptor desc((Address)gdt, Gdt::gdt_max-1);
@@ -546,7 +547,7 @@ struct Ia32_intel_microcode
     if (!update)
       return false;
 
-    static Spin_lock<> load_lock(Spin_lock<>::Unlocked);
+    static Spin_lock<> load_lock;
 
       {
         auto g = lock_guard(load_lock);
@@ -570,6 +571,25 @@ struct Ia32_intel_microcode
     return true;
   }
 };
+
+/**
+ * Reset the IO bitmap.
+ *
+ * Instead of physically resetting the IO bitmap by setting its bits, the
+ * IO bitmap offset in the TSS is set beyond the TSS segment limit.
+ *
+ * On an IO port access, this effectively causes a #GP exception even without
+ * the CPU accessing the IO bitmap.
+ *
+ * \note This method needs to be called with the CPU lock held.
+ */
+PUBLIC inline NEEDS["tss.h"]
+void
+Cpu::reset_io_bitmap()
+{
+  _tss->_hw.ctx.iopb = Tss::Segment_limit + 1;
+  _tss->_io_bitmap_revision = 0;
+}
 
 //-----------------------------------------------------------------------------
 IMPLEMENTATION[ux]:
@@ -973,7 +993,7 @@ Cpu::exception_string(Mword trapno)
   return exception_strings[trapno];
 }
 
-PUBLIC static inline FIASCO_INIT_CPU
+PUBLIC static inline FIASCO_INIT_CPU_SFX(cpuid)
 void
 Cpu::cpuid(Unsigned32 mode, Unsigned32 ecx_val,
            Unsigned32 *eax, Unsigned32 *ebx, Unsigned32 *ecx, Unsigned32 *edx)
@@ -1188,7 +1208,7 @@ Cpu::set_model_str()
   snprintf(_model_str, sizeof (_model_str), "Unknown CPU");
 }
 
-PUBLIC inline FIASCO_INIT_CPU
+PUBLIC inline FIASCO_INIT_CPU_SFX(arch_perfmon_info)
 void
 Cpu::arch_perfmon_info(Unsigned32 *eax, Unsigned32 *ebx, Unsigned32 *ecx) const
 {
@@ -1242,7 +1262,7 @@ Cpu::identify()
   _inst_tlb_4k_4m_entries =
   _data_tlb_4k_4m_entries = 0;
 
-  // Check for Alignment Check Support
+  // Check for Alignment Check Support -- works only on 486 and later
   set_flags(eflags ^ EFLAGS_AC);
   // FIXME: must not panic at cpu hotplug
   if (((get_flags() ^ eflags) & EFLAGS_AC) == 0)
@@ -1613,7 +1633,10 @@ Cpu::pm_resume()
   init_indirect_branch_mitigation();
 
   init_sysenter();
-  wrmsr(_suspend_tsc, MSR_TSC);
+
+  if ((features() & FEAT_TSC) && can_wrmsr())
+    if (_ext_07_ebx & FEATX_IA32_TSC_ADJUST)
+      wrmsr(0, 0, MSR_IA32_TSC_ADJUST);
 
   try_enable_hw_performance_states(true);
 }
@@ -1982,13 +2005,8 @@ Cpu::init()
     }
 
   if ((features() & FEAT_TSC) && can_wrmsr())
-    {
-      if (_ext_07_ebx & FEATX_IA32_TSC_ADJUST)
-        wrmsr(0, 0, MSR_IA32_TSC_ADJUST);
-      else
-        // at least reset time stamp counter (better for debugging)
-        wrmsr(0, 0, MSR_TSC);
-    }
+    if (_ext_07_ebx & FEATX_IA32_TSC_ADJUST)
+      wrmsr(0, 0, MSR_IA32_TSC_ADJUST);
 
   // See Attribs_enum on how PA0, PA2 and PA3 are used.
   // PA0 (used):   Write back (WB).
@@ -2258,18 +2276,18 @@ Cpu::init_indirect_branch_mitigation()
   if (_vendor == Vendor_intel)
     {
       if (cpuid_eax(0) < 7)
-        panic("intel CPU does not support IBRS, IBPB, STIBP (cpuid max < 7)\n");
+        panic("Intel CPU does not support IBRS, IBPB, STIBP (cpuid max < 7)");
 
       Unsigned32 d = cpuid_edx(7);
       if (!(d & FEATX_IBRS_IBPB))
-        panic("IBRS / IBPB not supported by CPU: %x\n", d);
+        panic("IBRS / IBPB not supported by CPU: %x", d);
 
       if (!(d & FEATX_STIBP))
-        panic("STIBP not supported by CPU: %x\n", d);
+        panic("STIBP not supported by CPU: %x", d);
 
       // enable STIBP
       wrmsr(2, 0x48);
     }
   else
-    panic("Kernel compiled with IBRS / IBPB, but not supported on non-Intel CPUs\n");
+    panic("Kernel compiled with IBRS / IBPB, but not supported on non-Intel CPUs");
 }

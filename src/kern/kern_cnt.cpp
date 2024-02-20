@@ -44,8 +44,8 @@ Unsigned8 Kern_cnt::valid_ctrs[Kern_cnt::Valid_ctrs] =
   Kern_cnt_exc_ipc,
 };
 
-static Mword Kern_cnt::read_kcnt1() { return (Mword)*kcnt[0]; }
-static Mword Kern_cnt::read_kcnt2() { return (Mword)*kcnt[1]; }
+static Mword Kern_cnt::read_kcnt1() { return *kcnt[0]; }
+static Mword Kern_cnt::read_kcnt2() { return *kcnt[1]; }
 
 PUBLIC static
 int
@@ -93,8 +93,6 @@ Kern_cnt::get_str(unsigned num)
     {
     case Kern_cnt_context_switch:    return "Context switches";
     case Kern_cnt_addr_space_switch: return "Address space switches";
-    case Kern_cnt_shortcut_failed:   return "IPC shortcut failed";
-    case Kern_cnt_shortcut_success:  return "IPC shortcut success";
     case Kern_cnt_irq:               return "Hardware interrupts";
     case Kern_cnt_ipc_long:          return "Long IPCs";
     case Kern_cnt_page_fault:        return "Page faults";

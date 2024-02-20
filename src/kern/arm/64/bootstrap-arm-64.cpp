@@ -17,7 +17,7 @@ EXTENSION class Bootstrap
   struct Bs_alloc
   {
     Bs_alloc(void *base, Mword &free_map)
-    : _p((Address)base), _free_map(free_map)
+    : _p(reinterpret_cast<Address>(base)), _free_map(free_map)
     {}
 
     static Address to_phys(void *v)
@@ -25,9 +25,8 @@ EXTENSION class Bootstrap
 
     static bool valid() { return true; }
 
-    void *alloc(Bytes size)
+    void *alloc(Bytes /* size */)
     {
-      (void) size;
       // assert (size == Config::PAGE_SIZE);
       // test that size is a power of two
       // assert (((size - 1) ^ size) == (size - 1));
@@ -48,6 +47,7 @@ EXTENSION class Bootstrap
 
 IMPLEMENTATION [arm]:
 
+#include "paging_bits.h"
 
 /**
  * Map RAM range with super pages.
@@ -62,17 +62,16 @@ Bootstrap::map_ram_range(PDIR *kd, Bs_alloc &alloc,
                          unsigned long pstart, unsigned long pend,
                          unsigned long va_offset, Page::Kern kern)
 {
-  pstart = Mem_layout::trunc_superpage(pstart);
-  pend = Mem_layout::round_superpage(pend);
+  pstart = Super_pg::trunc(pstart);
+  pend = Super_pg::round(pend);
   unsigned long size = pend - pstart;
 
   for (unsigned long i = 0; i < size; i += Config::SUPERPAGE_SIZE)
     {
       auto pte = kd->walk(::Virt_addr(pstart - va_offset + i),
                           PDIR::Super_level, false, alloc, Bs_mem_map());
-      pte.set_page(pte.make_page(Phys_mem_addr(pstart + i),
-                                 Page::Attr(Page::Rights::RWX(),
-                                            Page::Type::Normal(), kern)));
+      pte.set_page(Phys_mem_addr(pstart + i),
+                   Page::Attr(Page::Rights::RWX(), Page::Type::Normal(), kern));
     }
 }
 
@@ -95,7 +94,7 @@ struct Elf64_rela
 
   inline void apply(unsigned long load_addr)
   {
-    auto *addr = (unsigned long *)(load_addr + offset);
+    auto *addr = reinterpret_cast<unsigned long *>(load_addr + offset);
     *addr = load_addr + addend;
   }
 };
@@ -496,7 +495,7 @@ Bootstrap::init_paging()
       "msr ttbr0_el2, %0 \n"
       "isb               \n"
       : :
-      "r"(d), "r"((Mword)Page::Ttbcr_bits));
+      "r"(d), "r"(Mword{Page::Ttbcr_bits}));
 
   return Phys_addr(0);
 }

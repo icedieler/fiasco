@@ -33,7 +33,7 @@ public:
 
     void reset_mp_safe()
     {
-      set_monitored_address(&_f, (Func)0);
+      set_monitored_address(&_f, Func{nullptr});
     }
 
     void set_mp_safe(cxx::functor<void (Cpu_number)> const &rf)
@@ -101,8 +101,6 @@ private:
   static Per_cpu<String_buf<81> > error_buffer;
   static bool was_input_error;
 
-  static Thread  *current_active;
-
   static const char *toplevel_cmds;
   static const char *non_interactive_cmds;
 
@@ -117,6 +115,7 @@ private:
   static void enter_trap_handler(Cpu_number cpu);
   static void leave_trap_handler(Cpu_number cpu);
   static bool handle_conditional_breakpoint(Cpu_number cpu, Jdb_entry_frame *e);
+  static bool handle_early_debug_traps(Jdb_entry_frame *e);
   static void handle_nested_trap(Jdb_entry_frame *e);
   static bool handle_user_request(Cpu_number cpu);
   static bool handle_debug_traps(Cpu_number cpu);
@@ -140,6 +139,7 @@ public:
 //---------------------------------------------------------------------------
 IMPLEMENTATION:
 
+#include <csetjmp>
 #include <cstdio>
 #include <cstring>
 #include <ctype.h>
@@ -169,7 +169,6 @@ char Jdb::next_cmd;			// next global command to execute
 char Jdb::hide_statline;		// show status line on enter_kdebugger
 DEFINE_PER_CPU Per_cpu<Jdb_entry_frame*> Jdb::entry_frame;
 Cpu_number Jdb::current_cpu;              // current CPU JDB is running on
-Thread *Jdb::current_active;		// current running thread
 bool Jdb::was_input_error;		// error in command sequence
 
 DEFINE_PER_CPU Per_cpu<Jdb::Remote_func> Jdb::remote_func;
@@ -199,6 +198,13 @@ T
 Jdb::monitor_address(Cpu_number, T const volatile *addr)
 { return *addr; }
 
+
+IMPLEMENT_DEFAULT static
+bool
+Jdb::handle_early_debug_traps(Jdb_entry_frame *)
+{
+  return false;
+}
 
 PUBLIC static
 bool
@@ -402,7 +408,7 @@ Jdb::execute_command_ni(char const *str, int len)
           was_input_error = true;
           if (0 != strchr(non_interactive_cmds, c))
             {
-              char _cmd[] = {(char)c, 0};
+              char _cmd[] = {static_cast<char>(c), 0};
               Jdb_core::Cmd cmd = Jdb_core::has_cmd(_cmd);
 
               if (cmd.cmd)
@@ -465,7 +471,7 @@ Jdb::input_short_mode(Jdb::Cmd *cmd, char const **args, int &cmd_key)
 
       printf("\033[K%c", c); // clreol + print key
 
-      char cmd_buffer[2] = { (char)c, 0 };
+      char cmd_buffer[2] = { static_cast<char>(c), 0 };
 
       *cmd = Jdb_core::has_cmd(cmd_buffer);
       if (cmd->cmd)
@@ -501,7 +507,7 @@ public:
     if (l < 0)
       l = _l + l;
 
-    if (l >= 0 && (unsigned)l < _l)
+    if (l >= 0 && static_cast<unsigned>(l) < _l)
       {
 	_l = l;
 	_b[l] = 0;
@@ -825,11 +831,11 @@ Jdb::write_ll_hex(String_buffer *buf, Signed64 x, bool sign)
   Unsigned64 xu = (x < 0) ? -x : x;
 
   if (sign)
-    buf->printf("%s%03lx%08x",
+    buf->printf("%s%03llx%08llx",
                 (x < 0) ? "-" : (x == 0) ? " " : "+",
-                (Mword)((xu >> 32) & 0xfff), (unsigned)xu);
+                (xu >> 32) & 0xfffU, xu & 0xffffffffU);
   else
-    buf->printf("%04lx%08x", (Mword)((xu >> 32) & 0xffff), (unsigned)xu);
+    buf->printf("%04llx%08llx", (xu >> 32) & 0xffffU, xu & 0xffffffffU);
 }
 
 PUBLIC static
@@ -901,13 +907,6 @@ Jdb::write_tsc(String_buffer *buf, Signed64 tsc, bool sign)
   if (tsc < 0)
     ns = -ns;
   write_ll_ns(buf, ns, sign);
-}
-
-PUBLIC static inline
-Thread*
-Jdb::get_current_active()
-{
-  return current_active;
 }
 
 PUBLIC static inline
@@ -1112,7 +1111,7 @@ Jdb_base_cmds::cmds() const override
 {
   static Cmd cs[] =
     { { 0, "*", "mode", "", "*|mode\tswitch long and short command mode",
-	(void*)0 } };
+        nullptr } };
 
   return cs;
 }
@@ -1157,9 +1156,6 @@ char Jdb::esc_line[]     = "\033[37m";
 char Jdb::esc_symbol[]   = "\033[33;1m";
 
 
-
-
-
 IMPLEMENT int
 Jdb::enter_jdb(Jdb_entry_frame *e, Cpu_number cpu)
 {
@@ -1170,6 +1166,9 @@ Jdb::enter_jdb(Jdb_entry_frame *e, Cpu_number cpu)
       if (!in_service)
 	return 0;
     }
+
+  if (handle_early_debug_traps(e))
+    return 0;
 
   enter_trap_handler(cpu);
 
@@ -1235,9 +1234,6 @@ Jdb::enter_jdb(Jdb_entry_frame *e, Cpu_number cpu)
 
   if (!never_break && really_break) 
     {
-      // determine current task/thread from stack pointer
-      update_prompt();
-
       do
 	{
 	  screen_scroll(1, Jdb_screen::height());
@@ -1250,7 +1246,7 @@ Jdb::enter_jdb(Jdb_entry_frame *e, Cpu_number cpu)
 	               ? ""
 	               : "    WARNING: Fiasco kernel checksum differs -- "
 	                 "read-only data has changed!\n",
-	             (int)Jdb_screen::width() - 11,
+	             Jdb_screen::width() - 11,
 	             Jdb_screen::Line);
 
               Cpu_mask cpus_in_jdb;
@@ -1580,7 +1576,7 @@ Jdb::remote_work_ipi(Cpu_number this_cpu, Cpu_number to_cpu,
   Ipi::send(Ipi::Debug, this_cpu, to_cpu);
 
   if (wait)
-    while (!*(volatile unsigned long *)&_remote_work_ipi_done)
+    while (!access_once(&_remote_work_ipi_done))
       Proc::pause();
 
   _remote_work_ipi_func = 0;

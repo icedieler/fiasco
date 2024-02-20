@@ -21,7 +21,7 @@ private:
   static Vmcb *ext_state(Vcpu_state *s)
   {
     // 0x400: offset into vCPU state page for VMCB start.
-    return reinterpret_cast<Vmcb *>(reinterpret_cast<char *>(s) + 0x400);
+    return offset_cast<Vmcb *>(s, 0x400);
   }
 };
 
@@ -162,7 +162,7 @@ Vm_svm::Vm_svm(Ram_quota *q)
 
 PUBLIC inline
 void *
-Vm_svm::operator new (size_t size, void *p) throw()
+Vm_svm::operator new (size_t size, void *p) noexcept
 {
   (void)size;
   assert (size == sizeof (Vm_svm));
@@ -179,7 +179,7 @@ Vm_svm::operator delete (void *ptr)
 
 PUBLIC
 void
-Vm_svm::tlb_flush(bool) override
+Vm_svm::tlb_flush_current_cpu() override
 {
   // Nothing to do here, we flush on each entry!
 }
@@ -616,7 +616,7 @@ Vm_svm::do_resume_vcpu(Context *ctxt, Vcpu_state *vcpu, Vmcb *vmcb_s)
 
   resume_vm_svm(kernel_vmcb_pa, &vcpu->_regs);
 
-  load_host_xcr0(host_xcr0, kernel_vmcb_s->state_save_area.xcr0);
+  restore_host_xcr0(host_xcr0, kernel_vmcb_s->state_save_area.xcr0);
 
 #if 0
   if (cr4 & CR4_PGE)
@@ -729,7 +729,9 @@ Vm_svm::resume_vcpu(Context *ctxt, Vcpu_state *vcpu, bool user_mode) override
 }
 
 namespace {
-static inline void __attribute__((constructor)) FIASCO_INIT
+
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(vm_svm_register_factory)
 register_factory()
 {
   if (!Svm::cpu_svm_available(Cpu_number::boot_cpu()))
@@ -738,6 +740,7 @@ register_factory()
   Kobject_iface::set_factory(L4_msg_tag::Label_vm,
                              Task::generic_factory<Vm_svm>);
 }
+
 }
 
 // ------------------------------------------------------------------------

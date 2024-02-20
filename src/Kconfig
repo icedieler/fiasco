@@ -34,6 +34,9 @@ config HAS_COV_OPTION
 config HAS_CPU_VIRT
 	bool
 
+config HAS_IRQ_DIRECT_INJECT_OPTION
+	bool
+
 menu "Target configuration"
 
 choice
@@ -209,23 +212,75 @@ config MP
 config MP_MAX_CPUS
 	int "Maximal supported number of CPUs"
 	depends on MP
-	range 1 128
+	range 1 8192
 	default 16
 	help
 	  The maximum number of CPUs the kernel supports.
 
-config CONTEXT_8K
-	bool #"TCB size of 8k"
+config KMEM_SIZE_AUTO
+	bool "Automatically determine kernel memory size"
+	default y
 	help
-	  Use this option to use 8K kernel stacks. Only disable this option
+	  If set to 'y' (default), the kernel automatically determines the
+	  amount of kernel memory using Config::kmem_per_cent(). The size of
+          the kernel memory can be overriden by the kernel command line
+          parameter "-kmemsize" passed to the boot loader.
+
+config KMEM_SIZE_KB
+	int "Kernel memory size in KiB"
+	depends on !KMEM_SIZE_AUTO
+	range 2048 4194304
+	default 32768
+	help
+	  The amount of kernel memory in KiB. The size of the kernel memory can
+	  be overridden by the kernel command line parameter "-kmemsize" passed
+	  to the boot loader.
+
+choice
+	prompt "Thread control block size"
+	default CONTEXT_SIZE_AUTO
+	help
+	  Choose the stack size of each thread in the kernel.
+
+config CONTEXT_SIZE_AUTO
+	bool "Automatic"
+	help
+	  Uses 8k stack size on 64-bit systems, otherwise 4k stacks.
+
+config CONTEXT_SIZE_8K
+	bool "8k stacks"
+	depends on EXPERIMENTAL
+	help
+	  Use this option to use 8K kernel stacks. Only choose this option
 	  when you know what you're doing.
 
-config CONTEXT_4K
-	bool #"TCB size of 4k"
-	default y if !CONTEXT_8K
+config CONTEXT_SIZE_4K
+	bool "4k stacks"
+	depends on EXPERIMENTAL
 	help
-	  Use this option to use 4K kernel stacks. Only disable this option
+	  Use this option to use 4K kernel stacks. Only choose this option
 	  when you know what you're doing.
+
+config CONTEXT_SIZE_2K
+	bool "2k stacks"
+	depends on EXPERIMENTAL
+	help
+	  Use this option to use 2K kernel stacks. Only choose this option
+	  when you know what you're doing.
+
+endchoice
+
+config CONTEXT_8K
+	bool
+	default y if CONTEXT_SIZE_8K || (CONTEXT_SIZE_AUTO && BIT64)
+
+config CONTEXT_4K
+	bool
+	default y if CONTEXT_SIZE_4K || (CONTEXT_SIZE_AUTO && !BIT64)
+
+config CONTEXT_2K
+	bool
+	default y if CONTEXT_SIZE_2K
 
 config SLOW_RTC
 	bool "Use RTC with 100 ticks per second"
@@ -309,6 +364,16 @@ config IOMMU
 	  The user-level must use kernel DMA spaces in combination with
 	  the IO-MMU kernel object to allow DMA.
 
+config IRQ_DIRECT_INJECT
+	bool "Support direct interrupt forwarding to guests"
+	depends on CPU_VIRT && HAS_IRQ_DIRECT_INJECT_OPTION
+	default y
+	help
+	  Adds support in the kernel to allow the VMM to let Fiasco directly
+	  forward hardware interrupts to a guest. This enables just the
+	  infrastructure. The virtual machine monitor needs to support this
+	  feature as well and manage the hardware interrupts accordingly.
+
 config DISABLE_VIRT_OBJ_SPACE
 	bool "No virtually mapped array for cap tables" if HAS_VIRT_OBJ_SPACE_OPTION
 	depends on HAS_VIRT_OBJ_SPACE_OPTION &&  EXPERIMENTAL
@@ -318,6 +383,35 @@ config VIRT_OBJ_SPACE
 	depends on HAS_VIRT_OBJ_SPACE_OPTION
 	depends on !DISABLE_VIRT_OBJ_SPACE
 	depends on !KERNEL_ISOLATION
+
+config PHYS_OBJ_SPACE_AVL
+	bool "Use AVL tree for object space"
+	depends on EXPERIMENTAL
+	help
+	  Usually objects in a space are stored in a page-based two-level
+	  tree. Depending on the distribution of the capabilites this might
+	  waste some memory but is always O(1).
+
+	  By enabling this option the object space is stored in an AVL tree.
+	  This allocates less memory at the expense of an O(log n) lookup
+	  time.
+
+config DISABLE_MAPDB
+	bool "Disable mapdb"
+	depends on EXPERIMENTAL
+	help
+	  This option disables the mapping database that tracks memory resource
+	  delegation in the system. This saves kernel memory that is normally
+	  required to find the task and the location where memory has been
+	  mapped. Enabling this option will make unmap only work on the
+	  affected task and child mappings cannot be (recursively) revoked any
+	  more!
+
+	  Say N unless you really know what you're doing.
+
+config MAPDB
+	def_bool y
+	depends on !DISABLE_MAPDB
 
 config KERNEL_ISOLATION
 	bool "Enable Kernel Address-Space Isolation" if AMD64
@@ -557,10 +651,6 @@ config JDB_ACCOUNTING
 
 	  Should be disabled for kernels which are used for measurements.
 
-config JDB_MISC
-	bool "Miscellaneous JDB modules"
-	depends on PF_UX || PF_PC
-
 endif # JDB
 
 
@@ -572,6 +662,11 @@ config POWERSAVE_GETCHAR
 	  This option uses a processor HALT in getchar() to save power and
 	  prevent some P4 processors from being overheated. This option
 	  requires a working timer IRQ to wakeup getchar periodically.
+
+config MBT_COUNTER
+	bool "Enable model-based testing counter"
+	default n
+	depends on EXPERIMENTAL
 
 choice
 	prompt "Warn levels"
@@ -587,6 +682,38 @@ config WARN_ANY
 	bool "Show all kernel warnings"
 
 endchoice # warn levels
+
+config UART_CHECKSUM
+	bool "UART checksumming"
+	default n
+	help
+	  Ensure serial output integrity by adding checksums to it. This
+	  ensures that the output transmitted over a serial line is not
+	  accidentally altered, thus potentially turning a failing test
+	  into a passing test, etc.
+
+	  If enabled, the UART output is checksummed continously using
+	  a CRC32 algorithm and the current checksum is printed periodically
+	  with each newline using a checksum tag. A counterpart decoding
+	  filter that checks the consistency of the checksums and removes
+	  the checksum tags from the output is available.
+
+	  The checksum tag size is 12 characters and it has the following
+	  format:
+
+	    "\n{hhhhhhhh} "
+
+	  In this template, the 'h' characters represent lower-case
+	  hexadecimal characters that encode the CRC32 checksum of all the
+	  previous characters in the output (including newline characters,
+	  but excluding the actual checksum tag, i.e. the curly brackets,
+	  the hexadecimal characters in between them and the tailing space
+	  character).
+
+	  The checksumming starts only after the first checksum tag which
+	  is:
+
+	    "\n{00000000} "
 
 # PF_SECTION: DEBUG
 
@@ -659,7 +786,6 @@ config BIT32
 	bool
 
 config BIT64
-	select CONTEXT_8K
 	bool
 
 config WARN_LEVEL

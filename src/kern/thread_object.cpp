@@ -38,13 +38,13 @@ PUBLIC inline
 Obj_cap::Obj_cap(L4_obj_ref const &o) : L4_obj_ref(o) {}
 
 PUBLIC inline NEEDS["kobject.h"]
-Kobject_iface *
-Obj_cap::deref(L4_fpage::Rights *rights = 0, bool dbg = false)
+Kobject_iface * __attribute__((nonnull))
+Obj_cap::deref(L4_fpage::Rights *rights, bool dbg = false)
 {
   Thread *current = current_thread();
   if (op() & L4_obj_ref::Ipc_reply)
     {
-      if (rights) *rights = current->caller_rights();
+      *rights = current->caller_rights();
       Thread *ca = static_cast<Thread*>(current->caller());
       if (EXPECT_TRUE(!dbg && ca))
         current->reset_caller();
@@ -56,7 +56,7 @@ Obj_cap::deref(L4_fpage::Rights *rights = 0, bool dbg = false)
       if (!self())
         return 0;
 
-      if (rights) *rights = L4_fpage::Rights::CRWS();
+      *rights = L4_fpage::Rights::CRWS();
       return current;
     }
 
@@ -207,34 +207,33 @@ Thread_object::sys_vcpu_resume(L4_msg_tag const &tag, Utcb const *utcb, Utcb *)
   L4_snd_item_iter snd_items(utcb, tag.words());
   int items = tag.items();
   if (vcpu_user_space())
-    for (; items && snd_items.more(); --items)
-      {
-        if (EXPECT_FALSE(!snd_items.next()))
-          break;
+    {
+      for (; items && snd_items.next(); --items)
+        {
+          // in this case we already have a counted reference managed by vcpu_user_space()
+          Lock_guard<Lock> guard;
+          if (!guard.check_and_lock(&static_cast<Task *>(vcpu_user_space())->existence_lock))
+            return commit_result(-L4_err::ENoent);
 
-        // in this case we already have a counted reference managed by vcpu_user_space()
-        Lock_guard<Lock> guard;
-        if (!guard.check_and_lock(&static_cast<Task *>(vcpu_user_space())->existence_lock))
-          return commit_result(-L4_err::ENoent);
+          cpu_lock.clear();
 
-        cpu_lock.clear();
+          L4_snd_item_iter::Item const *const item = snd_items.get();
+          L4_fpage sfp(item->d);
 
-        L4_snd_item_iter::Item const *const item = snd_items.get();
-        L4_fpage sfp(item->d);
+          L4_error err;
 
-        L4_error err;
+            {
+              Reap_list rl;
+              err = fpage_map(space(), sfp, vcpu_user_space(),
+                              L4_fpage::all_spaces(), item->b, &rl);
+            }
 
-          {
-            Reap_list rl;
-            err = fpage_map(space(), sfp, vcpu_user_space(),
-                            L4_fpage::all_spaces(), item->b, &rl);
-          }
+          cpu_lock.lock();
 
-        cpu_lock.lock();
-
-        if (EXPECT_FALSE(!err.ok()))
-          return commit_error(utcb, err);
-      }
+          if (EXPECT_FALSE(!err.ok()))
+            return commit_error(utcb, err);
+        }
+    }
 
   if ((vcpu->_saved_state & Vcpu_state::F_irqs)
       && (vcpu->sticky_flags & Vcpu_state::Sf_irq_pending))
@@ -292,7 +291,7 @@ Thread_object::sys_vcpu_resume(L4_msg_tag const &tag, Utcb const *utcb, Utcb *)
 
       target_space = static_cast<Task*>(vcpu_user_space());
 
-      arch_load_vcpu_user_state(vcpu, true);
+      arch_load_vcpu_user_state(vcpu);
     }
 
   LOG_TRACE("VCPU events", "vcpu", this, Vcpu_log,
@@ -340,12 +339,14 @@ Thread_object::sys_modify_senders(L4_msg_tag tag, Utcb const *in, Utcb * /*out*/
         }
 
       if (!c)
-        return Kobject_iface::commit_result(0);
+        break;
 
       sender_list()->cursor(c);
       Proc::preemption_point();
       c = sender_list()->cursor();
     }
+
+  sender_list()->cursor(0);
   return Kobject_iface::commit_result(0);
 }
 
@@ -419,7 +420,8 @@ Thread_object::sys_control(L4_fpage::Rights rights, L4_msg_tag tag,
       if (EXPECT_FALSE(!(task->caps() & Task::Caps::threads())))
         return commit_result(-L4_err::EInval);
 
-      User<Utcb>::Ptr utcb_addr = User<Utcb>::Ptr((Utcb*)utcb->values[5]);
+      User_ptr<Utcb> utcb_addr =
+        User_ptr<Utcb>(reinterpret_cast<Utcb*>(utcb->values[5]));
 
       if (EXPECT_FALSE(!bind(task, utcb_addr)))
         return commit_result(-L4_err::EInval); // unbind first !!
@@ -451,8 +453,10 @@ Thread_object::sys_control(L4_fpage::Rights rights, L4_msg_tag tag,
   out->values[2] = _old_exc_handler;
 
   if (del_state || add_state)
-    if (xcpu_state_change(~del_state, add_state, true))
-      current()->switch_to_locked(this);
+    {
+      assert(!(add_state & Thread_ready_mask));
+      xcpu_state_change(~del_state, add_state, true);
+    }
 
   return commit_result(0, 3);
 }
@@ -463,13 +467,10 @@ L4_msg_tag
 Thread_object::sys_vcpu_control(L4_fpage::Rights, L4_msg_tag const &tag,
                                 Utcb const *utcb, Utcb * /* out */)
 {
-  if (!space())
-    return commit_result(-L4_err::EInval);
-
-  User<Vcpu_state>::Ptr vcpu(0);
+  User_ptr<Vcpu_state> vcpu(0);
 
   if (tag.words() >= 2)
-    vcpu = User<Vcpu_state>::Ptr((Vcpu_state*)utcb->values[1]);
+    vcpu = User_ptr<Vcpu_state>(reinterpret_cast<Vcpu_state*>(utcb->values[1]));
 
   Mword del_state = 0;
   Mword add_state = 0;
@@ -511,8 +512,8 @@ Thread_object::sys_vcpu_control(L4_fpage::Rights, L4_msg_tag const &tag,
     }
   */
 
-  if (xcpu_state_change(~del_state, add_state, true))
-    current()->switch_to_locked(this);
+  assert(!(add_state & Thread_ready_mask));
+  xcpu_state_change(~del_state, add_state, true);
 
   return commit_result(0);
 }
@@ -527,15 +528,15 @@ Thread_object::ex_regs(Address ip, Address sp,
                 Address *o_ip = 0, Address *o_sp = 0, Mword *o_flags = 0,
                 Mword ops = 0)
 {
-  if (!space())
-    return false;
-
   if (current() == this)
     spill_user_state();
 
-  if (o_sp) *o_sp = user_sp();
-  if (o_ip) *o_ip = user_ip();
-  if (o_flags) *o_flags = user_flags();
+  if (o_sp)
+    *o_sp = user_sp();
+  if (o_ip)
+    *o_ip = user_ip();
+  if (o_flags)
+    *o_flags = user_flags();
 
   // Changing the run state is only possible when the thread is not in
   // an exception.
@@ -546,6 +547,9 @@ Thread_object::ex_regs(Address ip, Address sp,
     // sys_thread_ex_regs still works (in particular,
     // ex_regs_cap_handler and friends should still be called).
     return true;
+
+  if (!ex_regs_arch(ops))
+    return false;
 
   if (state() & Thread_dead)	// resurrect thread
     state_change_dirty(~Thread_dead, Thread_ready);
@@ -675,7 +679,7 @@ Thread_object::sys_thread_stats_remote(void *data)
   // the context of another thread, don't consume CPU time in that case.
   if (this == current())
     update_consumed_time();
-  *(Clock::Time *)data = consumed_time();
+  *static_cast<Clock::Time *>(data) = consumed_time();
   return Drq::done();
 }
 
@@ -708,6 +712,7 @@ Thread_object::sys_thread_stats(L4_msg_tag const &/*tag*/, Utcb const * /*utcb*/
 }
 
 namespace {
+
 static Kobject_iface * FIASCO_FLATTEN
 thread_factory(Ram_quota *q, Space *,
                L4_msg_tag, Utcb const *,
@@ -717,9 +722,11 @@ thread_factory(Ram_quota *q, Space *,
   return new (q) Thread_object(q);
 }
 
-static inline void __attribute__((constructor)) FIASCO_INIT
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(thread_register_factory)
 register_factory()
 {
   Kobject_iface::set_factory(L4_msg_tag::Label_thread, thread_factory);
 }
+
 }

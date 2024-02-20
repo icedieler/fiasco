@@ -42,13 +42,13 @@ protected:
       Failed = 5,
     };
 
-    static_assert((unsigned)Rcv_state::Open_wait_flag == (unsigned)Open_wait_flag,
+    static_assert(unsigned{Rcv_state::Open_wait_flag} == unsigned{Open_wait_flag},
                   "Rcv_state and Check_sender flags must be compatible");
 
     R s;
 
     constexpr Check_sender(Receiver::Rcv_state s)
-    : s((R)(s.s & Open_wait_flag))
+    : s(static_cast<R>(s.s & Open_wait_flag))
     {}
 
     constexpr Check_sender(R s) noexcept : s(s) {}
@@ -153,6 +153,20 @@ Thread::ipc_receiver_aborted() override
 }
 
 /**
+ * Receiver has to spill its FPU state before cross-core IPC that transfers FPU
+ * state.
+ *
+ * \pre Must be called in the context of the receiver.
+ */
+PRIVATE inline
+void
+Thread::prepare_xcpu_ipc_transfer_fpu()
+{
+  if (_utcb_handler || utcb().access()->inherit_fpu())
+    spill_fpu_if_owner();
+}
+
+/**
  * Receiver-ready callback. Receivers call this function in the context of a
  * waiting sender when they get ready to receive a message from that sender
  * (in this case a thread).
@@ -162,6 +176,10 @@ void
 Thread::ipc_send_msg(Receiver *recv, bool open_wait) override
 {
   Syscall_frame *regs = _snd_regs;
+
+  if (EXPECT_FALSE(home_cpu() != recv->home_cpu() && regs->tag().transfer_fpu()))
+    nonull_static_cast<Thread*>(recv)->prepare_xcpu_ipc_transfer_fpu();
+
   bool success = transfer_msg(regs->tag(), nonull_static_cast<Thread*>(recv),
                               _ipc_send_rights, open_wait);
   sender_dequeue(recv->sender_list());
@@ -254,6 +272,9 @@ Thread::handle_page_fault_pager(Thread_ptr const &_pager,
   Mword vcpu_irqs = vcpu_disable_irqs();
   Mem::barrier();
   Utcb *utcb = this->utcb().access(true);
+
+  increment_mbt_counter();
+
   Pf_msg_utcb_saver saved_utcb_fields(utcb);
 
 
@@ -887,8 +908,7 @@ Thread::send_exception(Trap_state *ts)
       if (EXPECT_FALSE(space()->is_sigma0()))
         {
           ts->dump();
-          WARNX(Error, "Sigma0 raised an exception --> HALT\n");
-          panic("...");
+          panic("Sigma0 raised an exception");
         }
 
       handler = this; // block on ourselves
@@ -990,14 +1010,8 @@ Thread::transfer_msg_items(L4_msg_tag const &tag, Thread* snd, Utcb *snd_utcb,
 
   Reap_list rl;
 
-  while (items > 0 && snd_item.more())
+  while (items > 0 && snd_item.next())
     {
-      if (EXPECT_FALSE(!snd_item.next()))
-        {
-          snd->set_ipc_error(L4_error::Overflow, rcv);
-          return false;
-        }
-
       L4_snd_item_iter::Item const *const item = snd_item.get();
 
       if (item->b.is_void())
@@ -1057,8 +1071,8 @@ Thread::transfer_msg_items(L4_msg_tag const &tag, Thread* snd, Utcb *snd_utcb,
               L4_error err;
 
                 {
-                  // We take the existence_lock for synchronizing maps...
-                  // This is kind of coarse grained
+                  // Take the existence_lock for synchronizing maps -- kind of
+                  // coarse-grained.
                   auto sp_lock = lock_guard_dont_lock(rcv_t->existence_lock);
                   if (!sp_lock.check_and_lock(&rcv_t->existence_lock))
                     {
@@ -1157,9 +1171,10 @@ Thread::do_send_wait(Thread *partner, L4_timeout snd_t)
 
   if (EXPECT_FALSE(snd_t.is_finite()))
     {
-      Unsigned64 tval = snd_t.microsecs(Timer::system_clock(), utcb().access(true));
+      Unsigned64 system_clock = Timer::system_clock();
+      Unsigned64 tval = snd_t.microsecs(system_clock, utcb().access(true));
       // Zero timeout or timeout expired already -- give up
-      if (tval == 0)
+      if (tval == 0 || tval <= system_clock)
         return !abort_send(L4_error::Timeout, partner);
 
       set_timeout(&timeout, tval);
@@ -1211,10 +1226,8 @@ Thread::remote_ipc_send(Ipc_remote_request *rq)
       break;
     }
 
-  if (rq->tag.transfer_fpu()
-      && (rq->partner->_utcb_handler
-          || rq->partner->utcb().access()->inherit_fpu()))
-    rq->partner->spill_fpu_if_owner();
+  if (rq->tag.transfer_fpu())
+    rq->partner->prepare_xcpu_ipc_transfer_fpu();
 
   // We may need to grab locks but this is forbidden in a DRQ handler. So
   // transfer the IPC in usual thread code at the sender side. However, this
@@ -1246,7 +1259,7 @@ PRIVATE static
 Context::Drq::Result
 Thread::handle_remote_ipc_send(Drq *src, Context *, void *_rq)
 {
-  Ipc_remote_request *rq = (Ipc_remote_request*)_rq;
+  Ipc_remote_request *rq = static_cast<Ipc_remote_request*>(_rq);
   bool r = nonull_static_cast<Thread*>(src->context())->remote_ipc_send(rq);
   return r ? Drq::need_resched() : Drq::done();
 }

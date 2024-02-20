@@ -20,7 +20,7 @@ ifeq ($(CONFIG_BIT64),y)
 PREPROCESS_PARTS += 64bit arm_esr_traps
 BITS := 64
 else
-PREPROCESS_PARTS += 32bit abs_syscalls
+PREPROCESS_PARTS += 32bit abs_syscalls recover_jmpbuf
 BITS := 32
 endif
 
@@ -55,6 +55,7 @@ VPATH			+= drivers/$(CONFIG_XARCH)/$(BITS) drivers/$(CONFIG_XARCH) drivers
 PRIVATE_INCDIR		+= drivers/$(CONFIG_XARCH)/$(BITS) drivers/$(CONFIG_XARCH) drivers
 INTERFACES_DRIVERS 	:= sa1100 mux_console console uart filter_console \
 			   h3xxx io mem mmu reset processor delayloop
+INTERFACES_DRIVERS	+= $(if $(CONFIG_UART_CHECKSUM),stream_crc32)
 io_IMPL			:= io io-arm
 mmu_IMPL		:= mmu mmu-arm mmu-arm-$(BITS)
 mem_IMPL		:= mem mem-arm
@@ -147,8 +148,12 @@ PRIVATE_INCDIR 	+= kern/$(CONFIG_XARCH)/$(BITS) kern/$(CONFIG_XARCH) kern
 INTERFACES_KERNEL += 	__main kmem_space boot_uart_init     \
 			irq_chip_generic bootstrap                  \
 			outer_cache utcb_support                    \
-			smc_call psci mem_chunk alternatives
+			smc_call psci alternatives
 
+NEED_MEM_CHUNK = $(or $(and $(CONFIG_ARM_GIC_MSI),$(CONFIG_HAVE_ARM_GICV3)),\
+                      $(CONFIG_IOMMU))
+
+INTERFACES_KERNEL-$(NEED_MEM_CHUNK) += mem_chunk
 INTERFACES_KERNEL-$(CONFIG_ARM_ACPI) += acpi acpi_fadt
 INTERFACES_KERNEL-$(CONFIG_ARM_MPCORE) += scu
 INTERFACES_KERNEL-$(CONFIG_ARM_CORTEX_A9) += scu
@@ -203,10 +208,9 @@ kernel_uart_IMPL  	:= kernel_uart kernel_uart-libuart
 map_util_IMPL		:= map_util map_util-mem map_util-objs
 mem_layout_IMPL		:= mem_layout mem_layout-arm-$(BITS) \
 			   mem_layout-arm
-mem_space_IMPL		:= mem_space mem_space-arm mem_space-arm-$(BITS) \
-			   mem_space-user
+mem_space_IMPL		:= mem_space mem_space-arm mem_space-arm-$(BITS)
 mem_unit_IMPL		:= mem_unit mem_unit-arm-$(BITS)
-kmem_IMPL		:= kmem-arm kmem
+kmem_IMPL		:= kmem kmem-arm
 kmem_alloc_IMPL		:= kmem_alloc kmem_alloc-arm
 kmem_space_IMPL		:= kmem_space kmem_space-arm-$(BITS)
 outer_cache_IMPL	:= outer_cache outer_cache-l2cxx0
@@ -414,31 +418,6 @@ ifeq ($(MPCORE_PHYS_BASE),)
 $(error $(MODULES_FILE_BSP) needs to set MPCORE_PHYS_BASE variable)
 endif
 endif
-endif
-
-ifneq ($(CONFIG_CPU_VIRT),)
-  ifeq ($(CC_TYPE),gcc)
-    ifeq ($(findstring $(CCVER_MAJOR),0 1 2 3),)
-      ifeq ($(CCVER_MAJOR),4)
-	ARM_CC_OK_FOR_VIRT := $(if $(findstring $(CCVER_MINOR),0 1 2 3 4 5 6),,y)
-      else
-        ARM_CC_OK_FOR_VIRT := y
-      endif
-    endif
-  endif
-  ifeq ($(CC_TYPE),clang)
-    ifeq ($(findstring $(CCVER_MAJOR),0 1 2 3 4 5 6),)
-      ARM_CC_OK_FOR_VIRT := y
-    else
-      $(shell touch buildcheck.ignore)
-      $(error At least Clang 7 required for compiling Fiasco with virtualization enabled)
-    endif
-  endif
-
-  ifeq ($(ARM_CC_OK_FOR_VIRT),)
-    $(shell touch buildcheck.ignore)
-    $(error At least GCC 4.7 required for compiling Fiasco with virtualization enabled)
-  endif
 endif
 
 MODULES_FILES += $(MODULES_FILE) $(MODULES_FILE_BSP)

@@ -6,7 +6,7 @@ SUBSYSTEMS = JABI ABI DRIVERS KERNEL LIBK CXXLIB JDB \
 # remove the ia32 tag until we marked all ia32 non-ux section with some extra tag
 PREPROCESS_PARTS	:= $(filter-out ia32,$(PREPROCESS_PARTS))
 PREPROCESS_PARTS	+= arch $(CONFIG_ABI) 32bit $(CONFIG_XARCH)    \
-			   fpu jdb_thread_names iofp \
+			   fpu jdb_thread_names iofp recover_jmpbuf \
                            obj_space_phys abs_syscalls auto_map_kip \
                            kernel_can_exit
 
@@ -52,6 +52,7 @@ VPATH			+= drivers/ux drivers/ia32 drivers
 PRIVATE_INCDIR		+= drivers/ux drivers/ia32 drivers
 INTERFACES_DRIVERS	:= mux_console console filter_console processor \
 			   delayloop mem
+INTERFACES_DRIVERS	+= $(if $(CONFIG_UART_CHECKSUM),stream_crc32)
 
 processor_IMPL		:= processor processor-ux
 mem_IMPL		:= mem mem-ia32
@@ -89,7 +90,7 @@ INTERFACES_KERNEL	:= string_buffer mem_region simpleio kernel_console panic warn
 			   ram_quota kmem_alloc ptab_base per_cpu_data_alloc \
 			   ref_obj                                \
 			   slab_cache kmem_slab dbg_page_info   \
-			   vmem_alloc paging fpu_state_ptr fpu	  \
+			   vmem_alloc paging paging_bits fpu_state_ptr fpu	  \
 			   ready_queue_wfq ready_queue_fp \
 			   sched_context switch_lock timer timeout	  \
 			   obj_space kobject_dbg kobject kobject_iface    \
@@ -107,7 +108,7 @@ INTERFACES_KERNEL	:= string_buffer mem_region simpleio kernel_console panic warn
 			   sender receiver ipc_sender thread thread_object \
 			   kobject_helper timer_tick platform_control     \
 			   syscalls ipc_gate irq_controller \
-			   kernel_thread dirq irq_chip irq_mgr \
+			   kernel_thread dirq allocator irq_chip irq_mgr \
 			   irq_chip_ia32 irq_chip_ux \
 			   banner fpu_alloc irq icu_helper main 	  \
 			   startup libc_support reset semaphore          \
@@ -125,7 +126,7 @@ INTERFACES_KERNEL	:= string_buffer mem_region simpleio kernel_console panic warn
 			   jdb_timeout gdt factory	                  \
 			   idt tss jdb_prompt_ext		  \
 			   jdb_handler_queue jdb_exit_module		  \
-			   jdb_halt_thread  jdb_tetris                    \
+			   jdb_halt_thread                                \
 			   jdb_kern_info_kip                              \
 			   jdb_kern_info_kmem_alloc jdb_kern_info_config  \
 			   jdb_space jdb_trap_state                       \
@@ -141,7 +142,7 @@ INTERFACES_KERNEL	:= string_buffer mem_region simpleio kernel_console panic warn
 
 boot_info_IMPL		:= boot_info boot_info-ia32 boot_info-ux
 clock_IMPL              := clock clock-ia32
-config_IMPL		:= config config-ia32-32 config-ux
+config_IMPL		:= config config-ia32-32 config-ia32 config-ux
 context_IMPL		:= context context-ia32 context-ia32-32 context-ux \
 			   context-vcpu
 continuation_IMPL	:= continuation-ia32-32-ux
@@ -168,7 +169,7 @@ jdb_trace_set_IMPL	:= jdb_trace_set jdb_trace_set-ia32-ux
 kdb_ke_IMPL		+= kdb_ke-ia32
 kernel_thread_IMPL	:= kernel_thread kernel_thread-std kernel_thread-ux
 kip_init_IMPL		:= kip_init-ia32 kip_init-ux
-kmem_IMPL		:= kmem-ia32 kmem-ux
+kmem_IMPL		:= kmem kmem-ia32 kmem-ux
 kmem_alloc_IMPL		:= kmem_alloc kmem_alloc-ia32
 main_IMPL		:= main-ia32-32 main-ux
 map_util_IMPL		:= map_util map_util-mem map_util-objs

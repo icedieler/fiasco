@@ -243,8 +243,8 @@ Fpu::emulate_insns(Mword opcode, Trap_state *ts)
       return false;
     }
 
-  if (ts->psr & Proc::Status_thumb)
-    ts->pc += 2;
+  // FPU insns are 32bit, even for thumb
+  ts->pc += 4;
 
   return true;
 }
@@ -424,9 +424,9 @@ Fpu::show(Cpu_number cpu)
 {
   const Fpsid s = fpu.cpu(cpu)._fpsid;
   printf("FPU%d: Subarch: %x, Part: %x, Rev: %x, Var: %x, Impl: %x\n",
-         cxx::int_value<Cpu_number>(cpu),
-         (int)s.sub_arch(), (int)s.part_number(),
-         (int)s.rev(), (int)s.variant(), (int)s.implementer());
+         cxx::int_value<Cpu_number>(cpu), s.sub_arch().get(),
+         s.part_number().get(), s.rev().get(), s.variant().get(),
+         s.implementer().get());
 }
 
 //-------------------------------------------------------------------------

@@ -20,7 +20,6 @@ public:
   {
     PAGE_SHIFT = ARCH_PAGE_SHIFT,
     PAGE_SIZE  = 1 << PAGE_SHIFT,
-    PAGE_MASK  = ~(PAGE_SIZE - 1),
 
     hlt_works_ok = 1,
     Irq_shortcut = 1,
@@ -37,11 +36,6 @@ public:
     Scheduler_granularity	= 1000UL,
     Default_time_slice	        = 10 * Scheduler_granularity,
 #endif
-  };
-
-  enum
-  {
-    KMEM_SIZE = 16 << 20,
   };
 
   // the default uart to use for serial console
@@ -89,7 +83,6 @@ public:
   {
     SUPERPAGE_SHIFT = 21,
     SUPERPAGE_SIZE  = 1 << SUPERPAGE_SHIFT,
-    SUPERPAGE_MASK  = ~(SUPERPAGE_SIZE -1)
   };
 };
 
@@ -104,7 +97,6 @@ public:
   {
     SUPERPAGE_SHIFT = 20,
     SUPERPAGE_SIZE  = 1 << SUPERPAGE_SHIFT,
-    SUPERPAGE_MASK  = ~(SUPERPAGE_SIZE -1)
   };
 };
 
@@ -124,3 +116,15 @@ IMPLEMENTATION [arm_v6plus]:
 #include "feature.h"
 
 KIP_KERNEL_FEATURE("armv6plus");
+
+//---------------------------------------------------------------------------
+IMPLEMENTATION [arm && 64bit]:
+
+IMPLEMENT_OVERRIDE inline ALWAYS_INLINE
+constexpr unsigned long Config::kmem_max()
+{
+  // The Pmem area can only map 1 GiB. Otherwise we would have to allocate
+  // additional page tables, which is not implemented (yet). Also account
+  // for the kernel image that is mapped in Pmem too.
+  return (1024UL - 8UL) << 20;
+}

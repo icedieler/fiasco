@@ -3,6 +3,11 @@ IMPLEMENTATION [arm_generic_timer]:
 PUBLIC static
 unsigned Timer::irq()
 {
+  using T = Generic_timer::Timer_type;
+  static_assert(   static_cast<T>(Gtimer::Type) == Generic_timer::Physical
+                || static_cast<T>(Gtimer::Type) == Generic_timer::Virtual
+                || static_cast<T>(Gtimer::Type) == Generic_timer::Hyp);
+
   switch (Gtimer::Type)
     {
     case Generic_timer::Physical: return 29;

@@ -1,12 +1,24 @@
-IMPLEMENTATION:
+INTERFACE:
 
-#include "config.h"
 #include "mem_layout.h"
 #include "paging.h"
 
+class Kmem : public Mem_layout
+{
+public:
+  static bool is_kmem_page_fault(Mword pfa, Mword error);
+
+  static Kpdir *kdir;
+};
+
+IMPLEMENTATION [arm || ia32 || amd64]:
+
+#include "config.h"
+#include "paging_bits.h"
+
 PRIVATE static
 bool
-Kmem::cont_mapped(Address phys_beg, Address phys_end, Address virt)
+Kmem::cont_mapped(Address phys_beg, Address phys_end, Address virt, [[maybe_unused]] bool cache)
 {
   for (Address p = phys_beg, v = virt;
        p < phys_end && v < Mem_layout::Registers_map_end;
@@ -15,6 +27,8 @@ Kmem::cont_mapped(Address phys_beg, Address phys_end, Address virt)
       auto e = kdir->walk(Virt_addr(v), kdir->Super_level);
       if (!e.is_valid() || p != e.page_addr())
         return false;
+      assert(   (!cache && e.attribs().type == Page::Type::Uncached())
+             || (cache && e.attribs().type == Page::Type::Normal()));
     }
 
   return true;
@@ -24,20 +38,20 @@ Kmem::cont_mapped(Address phys_beg, Address phys_end, Address virt)
 // Note: Not thread-safe.
 PUBLIC static
 Address
-Kmem::mmio_remap(Address phys, Address size, bool cache = false, bool with_exec = false)
+Kmem::mmio_remap(Address phys, Address size, bool cache = false, bool exec = false)
 {
   static Address ndev = 0;
-  Address phys_page = cxx::mask_lsb(phys, Config::SUPERPAGE_SHIFT);
-  Address phys_end  = Mem_layout::round_superpage(phys + size);
+  Address phys_page = Super_pg::trunc(phys);
+  Address phys_end  = Super_pg::round(phys + size);
 
   for (Address a = Mem_layout::Registers_map_start;
        a < Mem_layout::Registers_map_end; a += Config::SUPERPAGE_SIZE)
     {
-      if (cont_mapped(phys_page, phys_end, a))
-        return (phys & ~Config::SUPERPAGE_MASK) | (a & Config::SUPERPAGE_MASK);
+      if (cont_mapped(phys_page, phys_end, a, cache))
+        return Super_pg::trunc(a) | Super_pg::offset(phys);
     }
 
-  static_assert((Mem_layout::Registers_map_start & ~Config::SUPERPAGE_MASK) == 0,
+  static_assert(Super_pg::aligned(Mem_layout::Registers_map_start),
                 "Registers_map_start must be superpage-aligned");
   Address map_addr = Mem_layout::Registers_map_start + ndev;
 
@@ -52,7 +66,8 @@ Kmem::mmio_remap(Address phys, Address size, bool cache = false, bool with_exec 
       assert (!m.is_valid());
       assert (m.page_order() == Config::SUPERPAGE_SHIFT);
       m.set_page(m.make_page(Phys_mem_addr(p),
-                             Page::Attr(with_exec ? Page::Rights::RWX() : Page::Rights::RW(),
+                             Page::Attr(exec ? Page::Rights::RWX()
+                                             : Page::Rights::RW(),
                                         cache ? Page::Type::Normal()
                                               : Page::Type::Uncached(),
                                         Page::Kern::Global())));
@@ -61,5 +76,5 @@ Kmem::mmio_remap(Address phys, Address size, bool cache = false, bool with_exec 
       Mem_unit::tlb_flush_kernel(dm);
     }
 
-  return (phys & ~Config::SUPERPAGE_MASK) | map_addr;
+  return map_addr | Super_pg::offset(phys);
 }

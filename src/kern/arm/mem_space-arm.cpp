@@ -12,6 +12,7 @@ INTERFACE [arm]:
 EXTENSION class Mem_space
 {
   friend class Jdb;
+  friend class Mem_space_test;
 
 public:
   typedef Pdir Dir_type;
@@ -41,6 +42,16 @@ public:
 
   static void kernel_space(Mem_space *);
 
+  /**
+   * Return maximum supported user space address.
+   *
+   * The page tables always provide up to Mem_layout::User_max bits of virtual
+   * address space. But at least on arm64 cpu_virt the HW supported stage1
+   * output size (maximum IPA size) is additionally constrained by the
+   * available physical address size of the MMU.
+   */
+  static Address user_max();
+
 private:
   // DATA
   Dir_type *_dir;
@@ -65,6 +76,7 @@ IMPLEMENTATION [arm]:
 #include "paging.h"
 #include "kmem.h"
 #include "kmem_alloc.h"
+#include "mem_layout.h"
 #include "mem_unit.h"
 
 Kmem_slab_t<Mem_space::Dir_type,
@@ -74,14 +86,7 @@ PUBLIC static inline
 bool
 Mem_space::is_full_flush(L4_fpage::Rights rights)
 {
-  return (bool)(rights & L4_fpage::Rights::R());
-}
-
-PUBLIC static inline
-Address
-Mem_space::pmem_to_phys(Address virt)
-{
-  return Mem_layout::pmem_to_phys(virt);
+  return static_cast<bool>(rights & L4_fpage::Rights::R());
 }
 
 IMPLEMENT inline
@@ -95,41 +100,28 @@ Mem_space::regular_tlb_type()
 
 IMPLEMENT inline NEEDS["mem_unit.h"]
 void
-Mem_space::tlb_flush(bool force = false)
+Mem_space::tlb_flush_current_cpu()
 {
   if (!Have_asids)
     Mem_unit::tlb_flush();
-  else if (force && c_asid() != Mem_unit::Asid_invalid)
+  else if (c_asid() != Mem_unit::Asid_invalid)
     {
       Mem_unit::tlb_flush(c_asid());
       tlb_mark_unused_if_non_current();
     }
-
-  // else do nothing, we manage ASID local flushes in v_* already
-  // Mem_unit::tlb_flush();
 }
 
-
-PUBLIC inline
-bool
-Mem_space::set_attributes(Virt_addr virt, Attr page_attribs,
-                          bool writeback, Mword asid)
-{
-   auto i = _dir->walk(virt);
-
-  if (!i.is_valid())
-    return false;
-
-  i.set_attribs(page_attribs);
-  i.write_back_if(writeback, asid);
-  return true;
-}
 
 IMPLEMENT inline
 void Mem_space::kernel_space(Mem_space *_k_space)
 {
   _kernel_space = _k_space;
 }
+
+IMPLEMENT_DEFAULT inline NEEDS["mem_layout.h"]
+Address
+Mem_space::user_max()
+{ return Mem_layout::User_max; }
 
 IMPLEMENT
 Mem_space::Status
@@ -222,23 +214,25 @@ Mem_space::v_lookup(Vaddr virt, Phys_addr *phys,
                     Page_order *order, Attr *page_attribs)
 {
   auto i = _dir->walk(virt);
-  if (order) *order = Page_order(i.page_order());
+  if (order)
+    *order = Page_order(i.page_order());
 
   if (!i.is_valid())
     return false;
 
-  if (phys) *phys = Phys_addr(i.page_addr());
-  if (page_attribs) *page_attribs = i.attribs();
+  if (phys)
+    *phys = Phys_addr(i.page_addr());
+  if (page_attribs)
+    *page_attribs = i.attribs();
 
   return true;
 }
 
 IMPLEMENT
 L4_fpage::Rights
-Mem_space::v_delete(Vaddr virt, Page_order size,
+Mem_space::v_delete(Vaddr virt, [[maybe_unused]] Page_order size,
                     L4_fpage::Rights page_attribs)
 {
-  (void) size;
   assert (cxx::is_zero(cxx::get_lsb(Virt_addr(virt), size)));
   auto i = _dir->walk(virt);
 
@@ -271,9 +265,9 @@ Mem_space::~Mem_space()
                     Virt_addr(Mem_layout::User_max), 0, Pdir::Depth,
                     Kmem_alloc::q_allocator(_quota));
       // free all unshared page table levels for the kernel space
-      if (Virt_addr(Mem_layout::User_max) < Virt_addr(~0UL))
+      if (Virt_addr(Mem_layout::User_max) < Virt_addr(Pdir::Max_addr))
         _dir->destroy(Virt_addr(Mem_layout::User_max + 1),
-                      Virt_addr(~0UL), 0, Pdir::Super_level,
+                      Virt_addr(Pdir::Max_addr), 0, Pdir::Super_level,
                       Kmem_alloc::q_allocator(_quota));
       _dir_alloc.q_free(ram_quota(), _dir);
     }
@@ -294,7 +288,8 @@ Mem_space::initialize()
     return false;
 
   _dir->clear(Pte_ptr::need_cache_write_back(false));
-  _dir_phys = Phys_mem_addr(Kmem::kdir->virt_to_phys((Address)_dir));
+  _dir_phys =
+    Phys_mem_addr(Kmem::kdir->virt_to_phys(reinterpret_cast<Address>(_dir)));
 
   return true;
 }
@@ -304,7 +299,8 @@ Mem_space::Mem_space(Ram_quota *q, Dir_type* pdir)
   : _quota(q), _dir (pdir)
 {
   _current.cpu(Cpu_number::boot_cpu()) = this;
-  _dir_phys = Phys_mem_addr(Kmem::kdir->virt_to_phys((Address)_dir));
+  _dir_phys =
+    Phys_mem_addr(Kmem::kdir->virt_to_phys(reinterpret_cast<Address>(_dir)));
 }
 
 PUBLIC static inline

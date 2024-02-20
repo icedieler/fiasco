@@ -60,6 +60,7 @@ IMPLEMENTATION:
 #include "kmem_alloc.h"
 #include "kmem.h"
 #include "mem_layout.h"
+#include "paging_bits.h"
 
 PRIVATE  template< typename SPACE >
 static inline NEEDS["mem_layout.h"]
@@ -109,7 +110,7 @@ Obj_space_virt<SPACE>::caps_alloc(Cap_index virt)
       Mem_space::Phys_addr(Kmem::kdir->virt_to_phys((Address)mem)),
       cxx::mask_lsb(Virt_addr(cv), Mem_space::Page_order(Config::PAGE_SHIFT)),
       Mem_space::Page_order(Config::PAGE_SHIFT),
-      Mem_space::Attr(L4_fpage::Rights::RW()));
+      Mem_space::Attr::space_local(L4_fpage::Rights::RW()));
       //| Mem_space::Page_referenced | Mem_space::Page_dirty);
 
   switch (s)
@@ -127,7 +128,7 @@ Obj_space_virt<SPACE>::caps_alloc(Cap_index virt)
       return 0;
     };
 
-  unsigned long cap = (cv & (Config::PAGE_SIZE - 1)) | (unsigned long)mem;
+  unsigned long cap = (unsigned long)mem | Pg::offset(cv);
 
   return reinterpret_cast<Entry*>(cap);
 }
@@ -212,7 +213,7 @@ Obj_space_virt<SPACE>::lookup(Cap_index virt)
   virt &= Cap_index(~(~0UL << Whole_space));
 
   if (SPACE::mem_space(this) == Mem_space::current_mem_space(current_cpu()))
-    c = reinterpret_cast<Capability*>(cap_virt(virt));
+    c = cap_virt(virt);
   else
     c = get_cap(virt);
 
@@ -224,13 +225,13 @@ Obj_space_virt<SPACE>::lookup(Cap_index virt)
 
 PUBLIC template< typename SPACE >
 inline NEEDS [Obj_space_virt::cap_virt]
-Kobject_iface *
+Kobject_iface * __attribute__((nonnull))
 Obj_space_virt<SPACE>::lookup_local(Cap_index virt, L4_fpage::Rights *rights)
 {
   virt &= Cap_index(~(~0UL << Whole_space));
-  Capability *c = reinterpret_cast<Capability*>(cap_virt(virt));
+  Capability *c = cap_virt(virt);
   Capability cap = Mem_layout::read_special_safe(c);
-  if (rights) *rights = L4_fpage::Rights(cap.rights());
+  *rights = L4_fpage::Rights(cap.rights());
   return cap.obj();
 }
 

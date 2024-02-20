@@ -108,8 +108,8 @@ Mem_op::__arm_mem_cache_maint(int op, void const *start, void const *end)
       return;
     }
 
-  Virt_addr v = Virt_addr((Address)start);
-  Virt_addr e = Virt_addr((Address)end);
+  Virt_addr v = Virt_addr(reinterpret_cast<Address>(start));
+  Virt_addr e = Virt_addr(reinterpret_cast<Address>(end));
 
   Context *c = current();
 
@@ -131,7 +131,8 @@ Mem_op::__arm_mem_cache_maint(int op, void const *start, void const *end)
         {
           Virt_addr vstart = Virt_addr(phys_addr) | offs;
           Virt_addr vend = vstart + sz;
-          __arm_kmem_cache_maint(op, (void *)vstart, (void *)vend);
+          __arm_kmem_cache_maint(op, static_cast<void *>(vstart),
+                                 static_cast<void *>(vend));
         }
       v += sz;
     }
@@ -181,7 +182,7 @@ Mem_op::arm_mem_access(Mword *r)
 
   if ((e = setjmp(pf_recovery)) == 0)
     {
-      current()->recover_jmp_buf(&pf_recovery);
+      current()->set_recover_jmpbuf(&pf_recovery);
 
       switch (r[0])
 	{
@@ -226,7 +227,7 @@ Mem_op::arm_mem_access(Mword *r)
   else
     WARN("Unresolved memory access, skipping\n");
 
-  current()->recover_jmp_buf(0);
+  current()->clear_recover_jmpbuf();
 }
 
 extern "C" void sys_arm_mem_op()

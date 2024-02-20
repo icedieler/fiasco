@@ -1,6 +1,6 @@
 INTERFACE:
 
-#include "assert_opt.h"
+#include "assert.h"
 #include "obj_space_phys_util.h"
 
 EXTENSION class Generic_obj_space : Obj_space_phys<Generic_obj_space< SPACE > >
@@ -11,9 +11,9 @@ private:
 public:
   using Base::initialize;
 
-  static Ram_quota *ram_quota(Base const *base)
+  static Ram_quota * __attribute__((nonnull(1))) ram_quota(Base const *base)
   {
-    assert_opt (base);
+    assert(base);
     return static_cast<SPACE const *>(base)->ram_quota();
   }
 };
@@ -41,8 +41,8 @@ Generic_obj_space<SPACE>::lookup(Cap_index virt)
 
 IMPLEMENT template< typename SPACE >
 inline
-Kobject_iface * FIASCO_FLATTEN
-Generic_obj_space<SPACE>::lookup_local(Cap_index virt, L4_fpage::Rights *rights = 0)
+Kobject_iface * FIASCO_FLATTEN __attribute__((nonnull))
+Generic_obj_space<SPACE>::lookup_local(Cap_index virt, L4_fpage::Rights *rights)
 { return Base::lookup_local(virt, rights); }
 
 IMPLEMENT template< typename SPACE >
@@ -57,7 +57,7 @@ inline
 typename Generic_obj_space<SPACE>::Status FIASCO_FLATTEN
 Generic_obj_space<SPACE>::v_insert(Phys_addr phys, V_pfn const &virt, Page_order size,
                                    Attr page_attribs)
-{ return (Status)Base::v_insert(phys, virt, size, page_attribs); }
+{ return static_cast<Status>(Base::v_insert(phys, virt, size, page_attribs)); }
 
 IMPLEMENT template< typename SPACE >
 inline

@@ -62,8 +62,8 @@ public:
   /** Get the message to use for a given MSI.
    * \pre The IRQ pin needs to be already allocated before using this function.
    */
-  virtual int msg(Mword irqnum, Unsigned64, Msi_info *) const
-  { (void)irqnum; return -L4_err::ENosys; }
+  virtual int msg(Mword /* irqnum */, Unsigned64, Msi_info *) const
+  { return -L4_err::ENosys; }
 
   virtual void set_cpu(Mword irqnum, Cpu_number cpu) const;
 
@@ -106,13 +106,13 @@ Irq_mgr::alloc(Irq_base *irq, Mword global_irq, bool init = true)
   if (!i.chip)
     return false;
 
-  if (i.chip->alloc(irq, i.pin, init))
-    {
-      if (init)
-        i.chip->set_cpu(i.pin, Cpu_number::boot_cpu());
-      return true;
-    }
-  return false;
+  if (!i.chip->alloc(irq, i.pin, init))
+    return false;
+
+  if (init)
+    i.chip->set_cpu(i.pin, Cpu_number::boot_cpu());
+
+  return true;
 }
 
 PUBLIC inline

@@ -85,6 +85,7 @@ IMPLEMENTATION:
 #include "l4_types.h"
 #include <cassert>
 
+#include "cpu.h"
 #include "cpu_lock.h"
 #include "globals.h"
 #include "lock_guard.h"
@@ -137,12 +138,15 @@ Receiver::reset_caller(Receiver const *old_caller)
   cas(&_caller, ov, 0UL);
 }
 
+/**
+ * Unconditionally reset the caller.
+ */
 PUBLIC inline
 void
 Receiver::reset_caller()
 {
-  if (_caller)
-    _caller = 0;
+  assert(_caller);
+  _caller = 0;
 }
 
 PROTECTED inline
@@ -207,7 +211,7 @@ Receiver::set_timeout(Timeout *t, Unsigned64 tval)
   t->set(tval, home_cpu());
 }
 
-PUBLIC inline
+PUBLIC inline NEEDS["cpu.h"]
 void
 Receiver::enqueue_timeout_again()
 {
@@ -349,7 +353,7 @@ PRIVATE static
 Context::Drq::Result
 Receiver::handle_remote_abort_send(Drq *, Context *, void *_rq)
 {
-  Ipc_remote_dequeue_request *rq = (Ipc_remote_dequeue_request*)_rq;
+  Ipc_remote_dequeue_request *rq = static_cast<Ipc_remote_dequeue_request*>(_rq);
   if (rq->sender->in_sender_list())
     {
       // really cancel IPC

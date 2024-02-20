@@ -4,7 +4,7 @@ EXTENSION class Mem_layout
 {
 public:
   enum Virt_layout_kern_user_max : Address {
-    User_max             = 0x0000007fffffffff,
+    User_max             = 0x000000ffffffffff,
   };
 };
 
@@ -24,9 +24,6 @@ EXTENSION class Mem_layout
 {
 public:
   enum Virt_layout_kern : Address {
-    // These are guest physical addresses
-    Utcb_addr            = User_max + 1 - 0x10000,
-
     // The following are kernel virtual addresses. Mind that kernel and user
     // space live in different address spaces! Move to the top to minimize the
     // risk of colliding with physical memory which is still mapped 1:1.
@@ -58,7 +55,6 @@ EXTENSION class Mem_layout
 public:
   enum Virt_layout_kern : Address {
     User_max             = 0x0000ff7fffffffff,
-    Utcb_addr            = User_max + 1 - 0x10000,
     Service_page         = 0xffff1000eac00000,
     Tbuf_status_page     = Service_page + 0x5000,
     Tbuf_buffer_area	 = Service_page + 0x200000,

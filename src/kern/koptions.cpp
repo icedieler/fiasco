@@ -5,20 +5,20 @@ INTERFACE:
 namespace Koptions {
   using namespace L4_kernel_options;
 
-  Options *o();
+  Options const *o();
 };
 
 IMPLEMENTATION:
 
 namespace Koptions_ns
 {
-  Koptions::Options o __attribute__((section(".koptions"))) =
+  Koptions::Options const o __attribute__((section(".koptions"))) =
     {
       Koptions::Magic,
       Koptions::Version_current,
       0,              // flags
       0,              // kmemsize
-      { 0, 0, 0, 0, 0, 0 }, // uart
+      { 0, { 0 }, 0, 0, 0, 0, 0, 0 }, // uart
       0,              // core_spin_addr
       "",             // jdb_cmd
       0,              // tbuf_entries
@@ -27,5 +27,5 @@ namespace Koptions_ns
 }
 
 namespace Koptions {
-  Options *o() { return &Koptions_ns::o; }
+  Options const *o() { return &Koptions_ns::o; }
 };

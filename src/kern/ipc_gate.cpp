@@ -74,7 +74,6 @@ IMPLEMENTATION:
 
 #include <cstddef>
 
-#include "assert_opt.h"
 #include "entry_frame.h"
 #include "ipc_timeout.h"
 #include "kmem_slab.h"
@@ -171,7 +170,7 @@ Ipc_gate_obj::~Ipc_gate_obj()
 
 PUBLIC inline NEEDS[<cstddef>]
 void *
-Ipc_gate_obj::operator new (size_t, void *b) throw()
+Ipc_gate_obj::operator new (size_t, void *b) noexcept
 { return b; }
 
 static Kmem_slab_t<Ipc_gate_obj> _ipc_gate_allocator("Ipc_gate");
@@ -201,7 +200,7 @@ Ipc_gate::create(Ram_quota *q, Thread *t, Mword id)
 PUBLIC
 void Ipc_gate_obj::operator delete (void *_f)
 {
-  Ipc_gate_obj *f = (Ipc_gate_obj*)_f;
+  Ipc_gate_obj *f = static_cast<Ipc_gate_obj*>(_f);
   Ram_quota *p = f->_quota;
   asm ("" : "=m"(*f));
 
@@ -210,7 +209,7 @@ void Ipc_gate_obj::operator delete (void *_f)
     p->free(sizeof(Ipc_gate_obj));
 }
 
-PRIVATE inline NOEXPORT NEEDS["assert_opt.h"]
+PRIVATE inline NOEXPORT
 L4_msg_tag
 Ipc_gate_ctl::bind_thread(L4_obj_ref, L4_fpage::Rights rights,
                           Syscall_frame *f, Utcb const *in, Utcb *)
@@ -317,12 +316,13 @@ PRIVATE inline NOEXPORT
 L4_error
 Ipc_gate::block(Thread *ct, L4_timeout const &to, Utcb *u)
 {
-  Unsigned64 t = 0;
+  Unsigned64 tval = 0;
   if (!to.is_never())
     {
-      t = to.microsecs(Timer::system_clock(), u);
-      if (!t)
-	return L4_error::Timeout;
+      Unsigned64 system_clock = Timer::system_clock();
+      tval = to.microsecs(system_clock, u);
+      if (tval == 0 || tval <= system_clock)
+        return L4_error::Timeout;
     }
 
     {
@@ -333,11 +333,12 @@ Ipc_gate::block(Thread *ct, L4_timeout const &to, Utcb *u)
   ct->state_change_dirty(~Thread_ready, Thread_send_wait);
 
   IPC_timeout timeout;
-  if (t)
+  if (tval)
     {
-      timeout.set(t, current_cpu());
+      timeout.set(tval, current_cpu());
       ct->set_timeout(&timeout);
     }
+  // else infinite timeout
 
   ct->schedule();
 
@@ -348,7 +349,7 @@ Ipc_gate::block(Thread *ct, L4_timeout const &to, Utcb *u)
     {
       auto g = lock_guard(_wait_q.lock());
       if (!ct->in_sender_list())
-	return L4_error::None;
+        return L4_error::None;
 
       ct->sender_dequeue(&_wait_q);
       return L4_error::Timeout;
@@ -407,6 +408,7 @@ Ipc_gate::invoke(L4_obj_ref /*self*/, L4_fpage::Rights rights,
 }
 
 namespace {
+
 static Kobject_iface * FIASCO_FLATTEN
 ipc_gate_factory(Ram_quota *q, Space *space,
                  L4_msg_tag tag, Utcb const *utcb,
@@ -424,7 +426,8 @@ ipc_gate_factory(Ram_quota *q, Space *space,
         return 0;
 
       L4_fpage::Rights thread_rights = L4_fpage::Rights(0);
-      thread = cxx::dyn_cast<Thread*>(space->lookup_local(bind_thread.obj_index(), &thread_rights));
+      thread = cxx::dyn_cast<Thread*>(space->lookup_local(bind_thread.obj_index(),
+                                                          &thread_rights));
 
       if (EXPECT_FALSE(!thread))
         {
@@ -451,12 +454,14 @@ ipc_gate_factory(Ram_quota *q, Space *space,
   return static_cast<Ipc_gate_ctl*>(Ipc_gate::create(q, thread, id));
 }
 
-static inline void __attribute__((constructor)) FIASCO_INIT
+static inline
+void __attribute__((constructor)) FIASCO_INIT_SFX(ipc_gate_register_factory)
 register_factory()
 {
   Kobject_iface::set_factory(0, ipc_gate_factory);
   Kobject_iface::set_factory(L4_msg_tag::Label_kobject, ipc_gate_factory);
 }
+
 }
 
 //---------------------------------------------------------------------------

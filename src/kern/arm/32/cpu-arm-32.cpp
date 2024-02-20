@@ -64,7 +64,7 @@ void Cpu::early_init()
 
   check_for_swp_enable();
 
-  // switch to supervisor mode and intialize the memory system
+  // switch to supervisor mode and initialize the memory system
   asm volatile ( " mov  r2, r13             \n"
                  " mov  r3, r14             \n"
                  " msr  cpsr_c, %1          \n"
@@ -119,15 +119,14 @@ Cpu::init_supervisor_mode(bool is_boot_cpu)
   extern char ivt_start; // physical address!
 
   // map the interrupt vector table to 0xffff0000
-  auto pte = Mem_layout::kdir->walk(Virt_addr(Kmem_space::Ivt_base),
-                                    Kpdir::Depth, true,
-                                    Kmem_alloc::q_allocator(Ram_quota::root));
+  auto pte = Kmem::kdir->walk(Virt_addr(Kmem_space::Ivt_base),
+                              Kpdir::Depth, true,
+                              Kmem_alloc::q_allocator(Ram_quota::root));
 
   Address va = (Address)&ivt_start - Mem_layout::Sdram_phys_base
                                    + Mem_layout::Map_base;
-  pte.set_page(pte.make_page(Phys_mem_addr(Kmem::kdir->virt_to_phys(va)),
-                             Page::Attr(Page::Rights::RWX(),
-                             Page::Type::Normal(), Page::Kern::Global())));
+  pte.set_page(Phys_mem_addr(Kmem::kdir->virt_to_phys(va)),
+               Page::Attr::kern_global(Page::Rights::RWX()));
   pte.write_back_if(true);
   Mem_unit::tlb_flush_kernel(Kmem_space::Ivt_base);
 }
@@ -211,3 +210,13 @@ Cpu::hcr(Unsigned64 hcr)
   asm volatile ("mcr p15, 4, %0, c1, c1, 0" : : "r"(hcr & 0xffffffff));
   asm volatile ("mcr p15, 4, %0, c1, c1, 4" : : "r"(hcr >> 32));
 }
+
+//---------------------------------------------------------------------------
+IMPLEMENTATION [arm && !arm_lpae]:
+
+PUBLIC static inline unsigned Cpu::phys_bits() { return 32; }
+
+//---------------------------------------------------------------------------
+IMPLEMENTATION [arm && arm_lpae]:
+
+PUBLIC static inline unsigned Cpu::phys_bits() { return 40; }

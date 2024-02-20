@@ -5,8 +5,19 @@ class Trap_state;
 EXTENSION class Thread
 {
 public:
+  enum Ex_regs_flags_arm
+  {
+    Exr_arm_set_el_mask     = 0x3UL << 24,
+    Exr_arm_set_el_keep     = 0x0UL << 24,
+    Exr_arm_set_el_el0      = 0x1UL << 24,
+    Exr_arm_set_el_el1      = 0x2UL << 24,
+
+    Exr_arm_unassigned    = Exr_arch_mask & ~Exr_arm_set_el_mask,
+  };
+
   static void init_per_cpu(Cpu_number cpu, bool resume);
   static bool check_and_handle_linux_cache_api(Trap_state *);
+  bool check_and_handle_mem_op_fault(Mword error_code, Return_frame *ret_frame);
   bool check_and_handle_coproc_faults(Trap_state *);
 
 private:
@@ -24,6 +35,7 @@ IMPLEMENTATION [arm]:
 #include "thread_state.h"
 #include "types.h"
 #include "warn.h"
+#include "paging_bits.h"
 
 enum {
   FSR_STATUS_MASK = 0x0d,
@@ -51,7 +63,25 @@ PUBLIC inline NEEDS[Thread::arm_fast_exit]
 void FIASCO_NORETURN
 Thread::vcpu_return_to_kernel(Mword ip, Mword sp, Vcpu_state *arg)
 {
+  Return_frame *r = prepare_vcpu_return_to_kernel(ip, sp);
+
   extern char __iret[];
+  arm_fast_exit(r, __iret, arg);
+
+  // never returns here
+}
+
+/**
+ * Prepare return frame for vCPU kernel mode entry.
+ *
+ * As a special optimization this is called from AArch32 assembly to optimize
+ * the switch on this architecture. AArch64 always utilizes
+ * Thread::vcpu_return_to_kernel().
+ */
+PUBLIC inline
+Return_frame *
+Thread::prepare_vcpu_return_to_kernel(Mword ip, Mword sp)
+{
   Entry_frame *r = regs();
 
   r->ip(ip);
@@ -65,16 +95,10 @@ Thread::vcpu_return_to_kernel(Mword ip, Mword sp, Vcpu_state *arg)
   r->psr &= ~(Proc::Status_thumb | (1UL << 20));
 
   // make sure the VMM executes in the correct mode
-  if (Proc::Is_hyp)
-    {
-      r->psr_set_mode(Proc::Status_mode_user);
-      r->psr |= 0x1c0; // mask PSTATE.{I,A,F}
-    }
-
+  sanitize_vmm_state(r);
   assert(r->check_valid_user_psr());
-  arm_fast_exit(nonull_static_cast<Return_frame*>(r), __iret, arg);
 
-  // never returns here
+  return nonull_static_cast<Return_frame*>(r);
 }
 
 IMPLEMENT_DEFAULT inline
@@ -103,7 +127,7 @@ Thread::user_invoke()
   Mem::memset_mwords(&ts->r[0], 0, sizeof(ts->r) / sizeof(ts->r[0]));
 
   if (ct->space()->is_sigma0())
-    ts->r[0] = Kmem::kdir->virt_to_phys((Address)Kip::k());
+    ts->r[0] = Kmem::kdir->virt_to_phys(reinterpret_cast<Address>(Kip::k()));
 
   // load KIP syscall code into r1/x1 to allow user processes to
   // do syscalls even without access to the KIP.
@@ -121,14 +145,14 @@ Thread::user_invoke()
   // never returns here
 }
 
-IMPLEMENT inline NEEDS["space.h", "types.h", "config.h"]
+IMPLEMENT inline NEEDS["space.h", "types.h", "config.h", "paging_bits.h"]
 bool Thread::handle_sigma0_page_fault(Address pfa)
 {
   return mem_space()
-    ->v_insert(Mem_space::Phys_addr((pfa & Config::SUPERPAGE_MASK)),
-               Virt_addr(pfa & Config::SUPERPAGE_MASK),
+    ->v_insert(Mem_space::Phys_addr(Super_pg::trunc(pfa)),
+               Virt_addr(Super_pg::trunc(pfa)),
                Virt_order(Config::SUPERPAGE_SHIFT) /*mem_space()->largest_page_size()*/,
-               Mem_space::Attr(L4_fpage::Rights::URWX()))
+               Mem_space::Attr::space_local(L4_fpage::Rights::URWX()))
     != Mem_space::Insert_err_nomem;
 }
 
@@ -164,15 +188,8 @@ extern "C" {
 
     Thread *t = current_thread();
 
-    // cache operations we carry out for user space might cause PFs, we just
-    // ignore those
-    if (EXPECT_FALSE(!PF::is_usermode_error(error_code))
-        && EXPECT_FALSE(t->is_ignore_mem_op_in_progress()))
-      {
-        t->set_kernel_mem_op_hit();
-        ret_frame->pc += 4;
-        return 1;
-      }
+    if (EXPECT_FALSE(t->check_and_handle_mem_op_fault(error_code, ret_frame)))
+      return 1;
 
     // Pagefault in user mode
     if (PF::is_usermode_error(error_code))
@@ -212,7 +229,7 @@ extern "C" {
 
     if (Thread::is_debug_exception(ts->esr))
       {
-        Thread::handle_debug_exception(ts);
+        t->handle_debug_exception(ts);
         return;
       }
 
@@ -247,14 +264,14 @@ Thread::Thread(Ram_quota *q)
   _space.space(Kernel_task::kernel_task());
 
   if (Config::Stack_depth)
-    std::memset((char *)this + sizeof(Thread), '5',
+    std::memset(reinterpret_cast<char *>(this) + sizeof(Thread), '5',
                 Thread::Size - sizeof(Thread) - 64);
 
   // set a magic value -- we use it later to verify the stack hasn't
   // been overrun
   _magic = magic;
-  _recover_jmpbuf = 0;
   _timeout = 0;
+  clear_recover_jmpbuf();
 
   prepare_switch_to(&user_invoke);
 
@@ -281,18 +298,13 @@ void
 Thread::user_sp(Mword sp)
 { return regs()->sp(sp); }
 
-IMPLEMENT inline
-Mword
-Thread::user_flags() const
-{ return 0; }
-
 PRIVATE inline
 void
 Thread::save_fpu_state_to_utcb(Trap_state *ts, Utcb *u)
 {
-  char *esu = (char *)&u->values[21];
+  auto *esu = reinterpret_cast<Fpu::Exception_state_user *>(&u->values[21]);
   Fpu::save_user_exception_state(state() & Thread_fpu_owner, fpu_state().get(),
-                                 ts, (Fpu::Exception_state_user *)esu);
+                                 ts, esu);
 }
 
 PROTECTED inline
@@ -645,6 +657,13 @@ Thread::check_and_handle_linux_cache_api(Trap_state *)
 
 IMPLEMENT_DEFAULT inline
 bool
+Thread::check_and_handle_mem_op_fault(Mword, Return_frame *)
+{
+  return false;
+}
+
+IMPLEMENT_DEFAULT inline
+bool
 Thread::check_and_handle_coproc_faults(Trap_state *)
 {
   return false;
@@ -660,14 +679,26 @@ Thread::handle_sve_trap(Trap_state *)
 //-----------------------------------------------------------------------------
 IMPLEMENTATION [arm && !cpu_virt]:
 
-PUBLIC static inline template<typename T>
-T Thread::peek_user(T const *adr, Context *c)
+IMPLEMENT inline
+Mword
+Thread::user_flags() const
+{ return 0; }
+
+IMPLEMENT_OVERRIDE
+bool
+Thread::ex_regs_arch(Mword ops)
 {
-  T v;
-  c->set_ignore_mem_op_in_progress(true);
-  v = *adr;
-  c->set_ignore_mem_op_in_progress(false);
-  return v;
+  if (ops & Exr_arm_unassigned)
+    return false;
+
+  switch (ops & Exr_arm_set_el_mask)
+    {
+    case Exr_arm_set_el_keep:
+    case Exr_arm_set_el_el0:
+      return true;
+    }
+
+  return false;
 }
 
 //-----------------------------------------------------------------------------
@@ -726,26 +757,14 @@ Thread::arm_esr_entry(Return_frame *rf)
         {
           ct->state_del(Thread_cancel);
           Mword state = ct->state();
-          Unsigned32 pc = rf->pc;
 
           if (state & (Thread_vcpu_user | Thread_alien))
             {
-              ts->pc += ts->psr & Proc::Status_thumb ? 2 : 4;
               ct->send_exception(ts);
               return;
             }
-          else if (EXPECT_FALSE(!is_syscall_pc(pc + 4)))
-            {
-              ts->pc += ts->psr & Proc::Status_thumb ? 2 : 4;
-              slowtrap_entry(ts);
-              return;
-            }
 
-          rf->pc = get_lr_for_mode(rf);
-          ct->state_del(Thread_cancel);
-          typedef void Syscall(void);
-          extern Syscall *sys_call_table[];
-          sys_call_table[-(pc + 4) / 4]();
+          slowtrap_entry(ts);
           return;
         }
       break;

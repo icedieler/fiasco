@@ -27,7 +27,7 @@ IMPLEMENT
 void
 Jdb_tcb::print_entry_frame_regs(Thread *t)
 {
-  Jdb_entry_frame *ef = Jdb::get_entry_frame(Jdb::current_cpu);
+  Jdb_entry_frame *ef = Jdb::get_entry_frame(t->get_current_cpu());
 
   printf("Regs (before debug entry from %s mode):\n",
          ef->from_user() ? "user" : "kernel");
@@ -44,7 +44,7 @@ IMPLEMENT
 void
 Jdb_tcb::info_thread_state(Thread *t)
 {
-  Jdb_tcb_ptr current((Address)t->get_kernel_sp());
+  Jdb_tcb_ptr current(reinterpret_cast<Address>(t->get_kernel_sp()));
 
   printf("PC=%s%08lx\033[m USP=%08lx\n",
          Jdb::esc_emph, current.top_value(-2), current.top_value(-5));

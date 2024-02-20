@@ -161,6 +161,7 @@ SECTIONS {
     PROVIDE(_edata  =  .);
   } :kernel
 
+  __llvm_prf_bits : { KEEP(*(__llvm_prf_bits)) } :kernel
   __llvm_prf_cnts : { KEEP(*(__llvm_prf_cnts)) } :kernel
 
   . = ALIGN(8);
@@ -218,6 +219,7 @@ SECTIONS {
   /DISCARD/ :{
     *(.stab .stabstr .stab.excl .stab.exclstr)
     *(.stab.index .stab.indexstr .comment)
+    *(.eh_frame)
   }
 
 }

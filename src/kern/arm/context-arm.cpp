@@ -2,22 +2,8 @@ INTERFACE [arm]:
 
 EXTENSION class Context
 {
-public:
-  void set_ignore_mem_op_in_progress(bool);
-  bool is_ignore_mem_op_in_progress() const { return _kernel_mem_op.do_ignore; }
-  bool is_kernel_mem_op_hit_and_clear();
-  void set_kernel_mem_op_hit() { _kernel_mem_op.hit = 1; }
-
 protected:
   void sanitize_user_state(Return_frame *dst) const;
-
-private:
-  struct Kernel_mem_op
-  {
-    Unsigned8 do_ignore;
-    Unsigned8 hit;
-  };
-  Kernel_mem_op _kernel_mem_op;
 };
 
 // ------------------------------------------------------------------------
@@ -80,24 +66,6 @@ void Context::switchin_context(Context *from)
   Utcb_support::current(this->utcb().usr());
 }
 
-IMPLEMENT inline
-void
-Context::set_ignore_mem_op_in_progress(bool val)
-{
-  _kernel_mem_op.do_ignore = val;
-  Mem::barrier();
-}
-
-IMPLEMENT inline
-bool
-Context::is_kernel_mem_op_hit_and_clear()
-{
-  bool h = _kernel_mem_op.hit;
-  if (h)
-    _kernel_mem_op.hit = 0;
-  return h;
-}
-
 // ------------------------------------------------------------------------
 IMPLEMENTATION [arm && !cpu_virt]:
 
@@ -152,11 +120,10 @@ Context::arch_load_vcpu_kern_state(Vcpu_state *vcpu, bool do_load)
 
 IMPLEMENT_OVERRIDE inline
 void
-Context::arch_load_vcpu_user_state(Vcpu_state *vcpu, bool do_load)
+Context::arch_load_vcpu_user_state(Vcpu_state *vcpu)
 {
   _tpidruro = vcpu->_regs.tpidruro;
-  if (do_load)
-    load_tpidruro();
+  load_tpidruro();
 }
 
 // ------------------------------------------------------------------------

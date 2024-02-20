@@ -1,6 +1,8 @@
 INTERFACE [!io]:
 
-class Io_space;
+class Io_space
+{
+};
 
 //--------------------------------------------------------------------------
 INTERFACE [io]:
@@ -67,23 +69,24 @@ public:
 
   struct Ku_mem : public cxx::S_list_item
   {
-    User<void>::Ptr u_addr;
+    User_ptr<void> u_addr;
     void *k_addr;
     unsigned size;
 
     static Slab_cache *a;
 
-    void *operator new (size_t, Ram_quota *q) throw()
+    void *operator new (size_t, Ram_quota *q) noexcept
     { return a->q_alloc(q); }
 
-    void free(Ram_quota *q) throw()
+    void free(Ram_quota *q) noexcept
     { a->q_free(q, this); }
 
     template<typename T>
-    T *kern_addr(Smart_ptr<T, Simple_ptr_policy, User_ptr_discr> ua) const
+    T *kern_addr(User_ptr<T> ua) const
     {
-      typedef Address A;
-      return (T*)((A)ua.get() - (A)u_addr.get() + (A)k_addr);
+      return reinterpret_cast<T*>(reinterpret_cast<Address>(ua.get())
+                                  - reinterpret_cast<Address>(u_addr.get())
+                                  + reinterpret_cast<Address>(k_addr));
     }
   };
 
@@ -111,7 +114,6 @@ protected:
 //---------------------------------------------------------------------------
 IMPLEMENTATION:
 
-#include "assert.h"
 #include "atomic.h"
 #include "lock_guard.h"
 #include "config.h"
@@ -129,22 +131,22 @@ IMPLEMENT inline Space::~Space() {}
 
 PUBLIC
 Space::Ku_mem const *
-Space::find_ku_mem(User<void>::Ptr p, unsigned size)
+Space::find_ku_mem(User_ptr<void> p, unsigned size)
 {
-  Address const pa = (Address)p.get();
+  Address const pa = reinterpret_cast<Address>(p.get());
 
   // alignment check
   if (EXPECT_FALSE(pa & (sizeof(double) - 1)))
     return 0;
 
   // overflow check
-  if (EXPECT_FALSE(pa + size < pa))
+  if (EXPECT_FALSE(pa + size - 1 < pa))
     return 0;
 
   for (Ku_mem_list::Const_iterator f = _ku_mem.begin(); f != _ku_mem.end(); ++f)
     {
-      Address const a = (Address)f->u_addr.get();
-      if (a <= pa && (a + f->size) >= (pa + size))
+      Address const a = reinterpret_cast<Address>(f->u_addr.get());
+      if (a <= pa && (a + f->size - 1) >= (pa + size - 1))
 	return *f;
     }
 
@@ -167,3 +169,18 @@ Space::is_user_memory(Address address, Mword len)
          && Mem_layout::User_max - address >= len - 1;
 }
 
+//--------------------------------------------------------------------------
+IMPLEMENTATION [!io]:
+
+/**
+ * Empty IO space context switchin implementation.
+ *
+ * This empty method is here to streamline code that might or might not support
+ * IO spaces depending on the compile-time configuration.
+ */
+PUBLIC
+inline
+void
+Io_space::switchin_context(Space *)
+{
+}

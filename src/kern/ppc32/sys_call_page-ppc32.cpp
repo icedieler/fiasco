@@ -35,14 +35,13 @@ Sys_call_page::init()
   Mword *sys_calls = (Mword*)Mem_layout::Syscalls;
   if (!Vmem_alloc::page_alloc(sys_calls,
                               Vmem_alloc::NO_ZERO_FILL, Vmem_alloc::User))
-    panic("FIASCO: can't allocate system-call page.\n");
+    panic("Can't allocate system-call page.");
   for (unsigned i = 0; i < Config::PAGE_SIZE; i += sizeof(Mword))
     *(sys_calls++) = 0x44000002; //sc
 
   Kernel_task::kernel_task()
     ->set_attributes(Virt_addr(Mem_layout::Syscalls),
-	             Page::Attr(Page::Rights::URX(), Page::Type::Normal(),
-		                Page::Kern::Global()));
+	             Page::Attr::kern_global(Page::Rights::URX()));
 
   //Mem_unit::flush_cache();
 }

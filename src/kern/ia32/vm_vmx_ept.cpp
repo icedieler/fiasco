@@ -121,7 +121,7 @@ private:
         case (6 << 3): t = T::Normal(); break;
         }
 
-      return Attr(r, t);
+      return Attr(r, t, Page::Kern::None());
     }
 
     Unsigned64 entry() const { return *e; }
@@ -245,7 +245,7 @@ Vm_vmx_ept::add_page_size(Mem_space::Page_order o)
 
 PUBLIC
 void
-Vm_vmx_ept::tlb_flush(bool) override
+Vm_vmx_ept::tlb_flush_current_cpu() override
 {
   Vm_vmx_ept_tlb::flush_single(_eptp);
   tlb_mark_unused();
@@ -351,7 +351,7 @@ Vm_vmx_ept::v_set_access_flags(Mem_space::Vaddr, L4_fpage::Rights) override
 
 PUBLIC inline
 void *
-Vm_vmx_ept::operator new (size_t size, void *p) throw()
+Vm_vmx_ept::operator new (size_t size, void *p) noexcept
 {
   (void)size;
   assert (size == sizeof (Vm_vmx_ept));
@@ -403,19 +403,19 @@ Vm_vmx_ept::initialize()
 
 PUBLIC inline
 void
-Vm_vmx_ept::load_vm_memory(void *src)
+Vm_vmx_ept::load_vm_memory(Vmx_vm_state *vm_state)
 {
-  load(Vmx::F_guest_cr3, src);
-  Vmx::vmwrite(Vmx::F_ept_ptr, _eptp);
+  vm_state->load_cr3();
+  Vmx::vmcs_write<Vmx::Vmcs_ept_pointer>(_eptp);
 
   tlb_mark_used();
 }
 
 PUBLIC inline
 void
-Vm_vmx_ept::store_vm_memory(void *dest)
+Vm_vmx_ept::store_vm_memory(Vmx_vm_state *vm_state)
 {
-  store(Vmx::F_guest_cr3, dest);
+  vm_state->store_cr3();
 }
 
 PUBLIC static

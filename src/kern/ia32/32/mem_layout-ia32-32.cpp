@@ -4,6 +4,7 @@ INTERFACE [ia32]:
 #include "config.h"
 #include "linking.h"
 #include "template_math.h"
+#include "paging_bits.h"
 
 EXTENSION class Mem_layout
 {
@@ -12,6 +13,11 @@ public:
   {
     /// Is the adapter memory in the kernel image super page?
     Adap_in_kernel_image = FIASCO_IMAGE_PHYS_START < Config::SUPERPAGE_SIZE,
+  };
+
+  enum : Mword
+  {
+    utcb_ptr_align    = Tl_math::Ld<64>::Res,    // 64byte cachelines
   };
 
   enum : Mword
@@ -27,7 +33,7 @@ public:
     Tbuf_ustatus_page = Tbuf_status_page,
     Jdb_bench_page    = Service_page + 0x8000,   ///< % 4KB
     Jdb_bts_area      = Service_page + 0xf000,   ///< % 4KB size 0x81000
-    utcb_ptr_align    = Tl_math::Ld<64>::Res,    // 64byte cachelines
+
     Idt               = Service_page + 0xfe000,  ///< % 4KB
     Syscalls          = Service_page + 0xff000,  ///< % 4KB syscall page
     Tbuf_buffer_area  = Service_page + 0x200000, ///< % 2MB
@@ -36,9 +42,11 @@ public:
     // 0xeb800000-0xec000000 (8MB) free
     Registers_map_start = 0xec000000,
     Registers_map_end   = 0xef800000,
-    Kstatic           = 0xef800000,    ///< Io_bitmap - 4MB
-    Io_bitmap         = 0xefc00000,    ///< % 4MB
-    Vmem_end          = 0xf0000000,
+
+    Tss_start           = 0xef800000,    ///< % 4MB
+    Tss_end             = 0xf0000000,
+
+    Vmem_end            = 0xf0000000,
 
     Kernel_image        = FIASCO_IMAGE_VIRT_START, // usually 0xf0000000
     Kernel_image_size   = FIASCO_IMAGE_VIRT_SIZE,
@@ -67,8 +75,9 @@ public:
 
   enum Phys_addrs
   {
-    Kernel_image_phys = FIASCO_IMAGE_PHYS_START & Config::SUPERPAGE_MASK,
-    Adap_image_phys   = 0,
+    Kernel_image_phys
+      = Super_pg::trunc(FIASCO_U_CONST(FIASCO_IMAGE_PHYS_START)),
+    Adap_image_phys = 0,
   };
 
   template < typename T > static T* boot_data (T const *addr);
@@ -93,7 +102,7 @@ Mem_layout::kphys_base(Address base)
   physmem_offs = (Address)Physmem - base;
 }
 
-PUBLIC static inline NEEDS[<cassert>]
+IMPLEMENT static inline NEEDS[<cassert>]
 Address
 Mem_layout::pmem_to_phys(Address addr)
 {
@@ -101,17 +110,7 @@ Mem_layout::pmem_to_phys(Address addr)
   return addr - physmem_offs;
 }
 
-PUBLIC static inline NEEDS[<cassert>]
-Address
-Mem_layout::pmem_to_phys(const void *ptr)
-{
-  Address addr = reinterpret_cast<Address>(ptr);
-
-  assert (in_pmem(addr));
-  return addr - physmem_offs;
-}
-
-PUBLIC static inline
+IMPLEMENT static inline
 Address
 Mem_layout::phys_to_pmem(Address addr)
 {

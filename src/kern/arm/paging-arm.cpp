@@ -155,7 +155,7 @@ public:
       case Page::BUFFERED:  type = T::Buffered(); break;
       case Page::NONCACHEABLE: type = T::Uncached(); break;
       }
-    return Page::Attr(rights, type);
+    return Page::Attr(rights, type, Page::Kern::None());
   }
 
   Page::Rights access_flags() const
@@ -332,9 +332,12 @@ public:
     typedef Page::Kern K;
 
     Unsigned64 lower = 0x300; // inner sharable
-    if (attr.type == T::Normal())   lower |= ATTRIBS::CACHEABLE;
-    if (attr.type == T::Buffered()) lower |= ATTRIBS::BUFFERED;
-    if (attr.type == T::Uncached()) lower |= ATTRIBS::NONCACHEABLE;
+    if (attr.type == T::Normal())
+      lower |= ATTRIBS::CACHEABLE;
+    if (attr.type == T::Buffered())
+      lower |= ATTRIBS::BUFFERED;
+    if (attr.type == T::Uncached())
+      lower |= ATTRIBS::NONCACHEABLE;
 
     if (!(attr.kern & K::Global()))
       lower |= 0x800;
@@ -434,9 +437,12 @@ public:
     typedef Page::Type T;
 
     Unsigned64 lower = 0x300; // inner sharable
-    if (attr.type == T::Normal())   lower |= ATTRIBS::CACHEABLE;
-    if (attr.type == T::Buffered()) lower |= ATTRIBS::BUFFERED;
-    if (attr.type == T::Uncached()) lower |= ATTRIBS::NONCACHEABLE;
+    if (attr.type == T::Normal())
+      lower |= ATTRIBS::CACHEABLE;
+    if (attr.type == T::Buffered())
+      lower |= ATTRIBS::BUFFERED;
+    if (attr.type == T::Uncached())
+      lower |= ATTRIBS::NONCACHEABLE;
 
     // On AArch32 execution is only allowed if read access is permitted as well
     // On AArch64 this is not necessary, pages can be mapped execute-only
@@ -513,8 +519,8 @@ public:
     p |= n_attr;
     p &= ~Unsigned64(a_attr);
 
-    if (p != old) {
-      write_now(_this()->pte, p); }
+    if (p != old)
+      write_now(_this()->pte, p);
   }
 };
 
@@ -539,7 +545,7 @@ public:
 
   Pte_short_desc() = default;
   Pte_short_desc(void *p, unsigned char level)
-  : pte((Entry *)p), level(level)
+  : pte(static_cast<Entry *>(p)), level(level)
   {}
 
   bool is_valid() const { return access_once(pte) & 3; }
@@ -601,7 +607,7 @@ public:
 
   Pte_long_desc() = default;
   Pte_long_desc(void *p, unsigned char level)
-  : pte((Unsigned64*)p), level(level)
+  : pte(static_cast<Unsigned64*>(p)), level(level)
   {}
 
   bool is_valid() const { return *pte & 1; }
@@ -649,17 +655,15 @@ public:
     write_now(_this()->pte, p);
   }
 
-  void set_attribs(Page::Attr attr)
-  {
-    auto p = access_once(_this()->pte);
-    p = (p & _this()->_attribs_mask()) | _this()->_attribs(attr);
-    write_now(_this()->pte, p);
-  }
-
   Entry make_page(Phys_mem_addr addr, Page::Attr attr)
   {
     return _this()->_page_bits() | _this()->_attribs(attr)
            | cxx::int_value<Phys_mem_addr>(addr);
+  }
+
+  void set_page(Phys_mem_addr addr, Page::Attr attr)
+  {
+    set_page(make_page(addr, attr));
   }
 };
 

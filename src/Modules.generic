@@ -25,7 +25,7 @@ INTERFACES_KERNEL	:= cpu_mask rcupdate kobject_mapdb context_base pm \
 			   lock ipc_sender thread thread_object syscalls     \
 			   kernel_thread map_util irq banner warn            \
 			   app_cpu_thread globals watchdog kernel_uart       \
-			   main config vmem_alloc paging fpu                 \
+			   main config vmem_alloc paging paging_bits fpu     \
 			   fpu_state_ptr fpu_alloc cpu entry_frame               \
 			   kernel_console ipc_gate task sigma0_task          \
                            kernel_task platform_control_object          \
@@ -34,13 +34,16 @@ INTERFACES_KERNEL	:= cpu_mask rcupdate kobject_mapdb context_base pm \
 			   sched_context utcb_init perf_cnt trap_state       \
 			   buddy_alloc vkey kdb_ke prio_list ipi scheduler   \
 			   clock sys_call_page boot_alloc                    \
-			   assertion semaphore jdb_object tlbs
+			   semaphore jdb_object tlbs
 
 OBJ_SPACE_TYPE = $(if $(CONFIG_VIRT_OBJ_SPACE),virt,phys)
 PREPROCESS_PARTS-y$(CONFIG_VIRT_OBJ_SPACE) += obj_space_phys
 PREPROCESS_PARTS += obj_space_$(OBJ_SPACE_TYPE)
 INTERFACES_KERNEL-$(CONFIG_VIRT_OBJ_SPACE) += obj_space_virt_util
+INTERFACES_KERNEL-y$(CONFIG_NDEBUG) += assertion
 obj_space_IMPL = obj_space obj_space-$(OBJ_SPACE_TYPE)
+PREPROCESS_PARTS-$(CONFIG_MAPDB)           += mapdb
+PREPROCESS_PARTS-$(CONFIG_PHYS_OBJ_SPACE_AVL) += obj_space_phys_avl
 
 
 platform_control_IMPL   := platform_control
@@ -85,6 +88,9 @@ NOOPT			+= $(patsubst %.o, %,\
 LIBUART_UART = -include uart_$(strip $(1)).h \
 	       -DFIASCO_UART_TYPE=L4::Uart_$(strip $(if $(2),$(2),$(1)))
 
+LIBUART_UART2 = -include uart_$(strip $(1)).h \
+		-DFIASCO_UART2_TYPE=L4::Uart_$(strip $(if $(2),$(2),$(1)))
+
 #
 # COV Subsystem
 #
@@ -107,7 +113,8 @@ CSRC_LIBCOV-gcc   := gcov.c plain.c gcov-plain.c
 CSRC_LIBCOV        = output.c base64.c
 CSRC_LIBCOV       += $(CSRC_LIBCOV-$(CC_TYPE))
 
-# suppress compiler warnings for clang compiler-rt code
+# WARNING EXCEPTION: suppress compiler warnings for clang compiler-rt code,
+# only coverage tooling
 $(foreach f, $(patsubst %.c, %, $(CSRC_LIBCOV-clang_contrib)), \
         $(eval CFLAGS_$(f) += -Wno-strict-prototypes -Wno-unused-parameter \
                               -Wno-missing-prototypes -Wno-undef))

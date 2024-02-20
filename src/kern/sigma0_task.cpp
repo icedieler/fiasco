@@ -8,7 +8,7 @@ public:
   explicit Sigma0_task(Ram_quota *q) : Task(q) {}
   bool is_sigma0() const override { return true; }
   Address virt_to_phys_s0(void *virt) const override
-  { return (Address)virt; }
+  { return reinterpret_cast<Address>(virt); }
 };
 
 
@@ -25,7 +25,7 @@ Sigma0_task::v_fabricate(Mem_space::Vaddr address,
   *phys = cxx::mask_lsb(Virt_addr(address), *size);
 
   if (attribs)
-    *attribs = Mem_space::Attr(L4_fpage::Rights::URWX());
+    *attribs = Mem_space::Attr::space_local(L4_fpage::Rights::URWX());
 
   return true;
 }

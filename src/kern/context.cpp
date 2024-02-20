@@ -1,6 +1,5 @@
 INTERFACE:
 
-#include <csetjmp>             // typedef jmp_buf
 #include "types.h"
 #include "clock.h"
 #include "config.h"
@@ -58,14 +57,14 @@ public:
   Context_ptr_base(Context_ptr_base<T> const &o) : Context_ptr(o) {}
   template< typename X >
   Context_ptr_base(Context_ptr_base<X> const &o) : Context_ptr(o)
-  { X*x = 0; T*t = x; (void)t; }
+  { X*x = 0; T*t = x; static_cast<void>(t); }
 
   Context_ptr_base<T> const &operator = (Context_ptr_base<T> const &o)
   { Context_ptr::operator = (o); return *this; }
 
   template< typename X >
   Context_ptr_base<T> const &operator = (Context_ptr_base<X> const &o)
-  { X*x=0; T*t=x; (void)t; Context_ptr::operator = (o); return *this; }
+  { X*x=0; T*t=x; static_cast<void>(t); Context_ptr::operator = (o); return *this; }
 };
 
 class Context_space_ref
@@ -85,13 +84,13 @@ public:
   Space *vcpu_aware() const { return user_mode() ? vcpu_user() : space(); }
 
   void space(Space *s) { _s.set_unused(s); }
-  void vcpu_user(Space *s) { _v = (Address)s; }
+  void vcpu_user(Space *s) { _v = reinterpret_cast<Address>(s); }
   void user_mode(bool enable)
   {
     if (enable)
-      _v |= (Address)1;
+      _v |= static_cast<Address>(1);
     else
-      _v &= (Address)(~1);
+      _v &= static_cast<Address>(~1);
   }
 };
 
@@ -108,6 +107,7 @@ class Context :
   friend class Jdb_thread_list;
   friend class Context_ptr;
   friend class Jdb_utcb;
+  friend class Context_tester;
 
   struct State_request
   {
@@ -181,8 +181,8 @@ public:
     enum Wait_mode { No_wait = 0, Wait = 1 };
     // enum State { Idle = 0, Handled = 1, Reply_handled = 2 };
 
-    Request_func *func;
-    void *arg;
+    Request_func *func = nullptr;
+    void *arg          = nullptr;
     // State state;
   };
 
@@ -207,7 +207,7 @@ public:
     L4_sched_param const *sp;
     bool in_progress;
 
-    Migration() : in_progress(false) {}
+    Migration() : sp(nullptr), in_progress(false) {}
   };
 
   template<typename T>
@@ -216,32 +216,32 @@ public:
     MEMBER_OFFSET();
 
   private:
-    typename User<T>::Ptr _u;
+    User_ptr<T> _u;
     T *_k;
 
   public:
     Ku_mem_ptr() : _u(0), _k(0) {}
-    Ku_mem_ptr(typename User<T>::Ptr const &u, T *k) : _u(u), _k(k) {}
+    Ku_mem_ptr(User_ptr<T> const &u, T *k) : _u(u), _k(k) {}
 
-    void set(typename User<T>::Ptr const &u, T *k)
+    void set(User_ptr<T> const &u, T *k)
     { _u = u; _k = k; }
 
     T *access(bool is_current = false) const
     {
       // assert (!is_current || current() == context());
       if (is_current
-          && (int)Config::Access_user_mem == Config::Access_user_mem_direct)
+          && int{Config::Access_user_mem} == Config::Access_user_mem_direct)
         return _u.get();
 
       Cpu_number const cpu = current_cpu();
-      if ((int)Config::Access_user_mem == Config::Must_access_user_mem_direct
+      if (int{Config::Access_user_mem} == Config::Must_access_user_mem_direct
           && cpu == context()->home_cpu()
           && Mem_space::current_mem_space(cpu) == context()->space())
         return _u.get();
       return _k;
     }
 
-    typename User<T>::Ptr usr() const { return _u; }
+    User_ptr<T> usr() const { return _u; }
     T* kern() const { return _k; }
   };
 
@@ -335,15 +335,13 @@ protected:
   // for trigger_exception
   Continuation _exc_cont;
 
-  jmp_buf *_recover_jmpbuf;     // setjmp buffer for page-fault recovery
-
   Migration *_migration;
 
 public:
   void arch_load_vcpu_kern_state(Vcpu_state *vcpu, bool do_load);
 
 protected:
-  void arch_load_vcpu_user_state(Vcpu_state *vcpu, bool do_load);
+  void arch_load_vcpu_user_state(Vcpu_state *vcpu);
   void arch_update_vcpu_state(Vcpu_state *vcpu);
   void arch_vcpu_ext_shutdown();
 
@@ -354,7 +352,7 @@ protected:
   // timeout (Irq::_irq_thread is of type Receiver).
   Timeout *_timeout;
 
-  struct Kernel_drq : Drq { Context *src; };
+  struct Kernel_drq : Drq { Context *src = nullptr; };
 
 private:
   static Per_cpu<Clock> _clock;
@@ -362,6 +360,15 @@ private:
   static Per_cpu<Kernel_drq> _kernel_drq;
 };
 
+INTERFACE [recover_jmpbuf]:
+
+#include <csetjmp>
+
+EXTENSION class Context
+{
+private:
+  jmp_buf *_recover_jmpbuf; // setjmp buffer for page-fault recovery
+};
 
 INTERFACE [debug]:
 
@@ -444,7 +451,7 @@ DEFINE_PER_CPU Per_cpu<Clock> Context::_clock(Per_cpu_data::Cpu_num);
 DEFINE_PER_CPU Per_cpu<Context *> Context::_kernel_ctxt;
 DEFINE_PER_CPU Per_cpu<Context::Kernel_drq> Context::_kernel_drq;
 
-IMPLEMENT inline NEEDS["assert.h"]
+IMPLEMENT inline NEEDS[<cassert>]
 Kobject_iface * __attribute__((nonnull(2, 3)))
 Context_ptr::ptr(Space *s, L4_fpage::Rights *rights) const
 {
@@ -502,16 +509,17 @@ Context::check_for_current_cpu() const
   if (0 && EXPECT_FALSE(!r)) // debug output disabled
     printf("FAIL: cpu=%u (current=%u) %p current=%p\n",
            cxx::int_value<Cpu_number>(hc),
-           cxx::int_value<Cpu_number>(current_cpu()), this, current());
+           cxx::int_value<Cpu_number>(current_cpu()),
+           static_cast<void const *>(this),
+           static_cast<void *>(current()));
   return r;
 }
 
 
 PUBLIC inline
 Mword
-Context::state(bool check = false) const
+Context::state([[maybe_unused]] bool check = false) const
 {
-  (void)check;
   assert(!check || check_for_current_cpu());
   return _state;
 }
@@ -531,21 +539,9 @@ Context::kernel_context(Cpu_number cpu, Context *ctxt)
 //@{
 //-
 
-
 /**
- * Does the context exist? .
- * @return true if this context has been initialized.
- */
-PUBLIC inline NEEDS [Context::is_invalid]
-Mword
-Context::exists() const
-{
-  return !is_invalid();
-}
-
-/**
- * Is the context about to be deleted.
- * @return true if this context is in deletion.
+ * Check if the context is inactive, i.e. has not yet been started or was killed.
+ * @return true if this context is inactive.
  */
 PUBLIC inline NEEDS ["thread_state.h"]
 bool
@@ -576,9 +572,8 @@ Context::state_add(Mword bits)
  */
 PUBLIC inline
 void
-Context::state_add_dirty(Mword bits, bool check = true)
+Context::state_add_dirty(Mword bits, [[maybe_unused]] bool check = true)
 {
-  (void)check;
   assert(!check || check_for_current_cpu());
   _state |= bits;
 }
@@ -604,9 +599,8 @@ Context::state_del(Mword bits)
  */
 PUBLIC inline
 void
-Context::state_del_dirty(Mword bits, bool check = true)
+Context::state_del_dirty(Mword bits, [[maybe_unused]] bool check = true)
 {
-  (void)check;
   assert(!check || check_for_current_cpu());
   _state &= ~bits;
 }
@@ -660,9 +654,9 @@ Context::state_change(Mword mask, Mword bits)
  */
 PUBLIC inline
 void
-Context::state_change_dirty(Mword mask, Mword bits, bool check = true)
+Context::state_change_dirty(Mword mask, Mword bits,
+                            [[maybe_unused]] bool check = true)
 {
-  (void)check;
   assert(!check || check_for_current_cpu());
   _state &= mask;
   _state |= bits;
@@ -777,7 +771,6 @@ Context::schedule()
         rq->ready_dequeue(next_to_run->sched());
       else switch (schedule_switch_to_locked(next_to_run))
         {
-        default:
         case Switch::Ok:      return;   // ok worked well
         case Switch::Failed:  break;    // not migrated, need preemption point
         case Switch::Resched:
@@ -974,7 +967,7 @@ Context::consumed_time()
  * @param t Destination thread whose scheduling context and execution context
  *          should be activated.
  */
-PROTECTED inline NEEDS ["assert.h", Context::switch_handle_drq]
+PROTECTED inline NEEDS [<cassert>, Context::switch_handle_drq]
 Context::Switch FIASCO_WARN_RESULT
 Context::schedule_switch_to_locked(Context *t)
 {
@@ -1052,8 +1045,7 @@ Context::switch_exec_locked(Context *t, enum Helping_mode mode)
   assert (current() == this);
 
   // only for logging
-  Context *t_orig = t;
-  (void)t_orig;
+  [[maybe_unused]] Context *t_orig = t;
 
   // Time-slice lending: if t is locked, switch to its locker
   // instead, this is transitive
@@ -1105,8 +1097,7 @@ Context::switch_exec_helping(Context *t, Mword const *lock, Mword val)
   assert (current() == this);
 
   // only for logging
-  Context *t_orig = t;
-  (void)t_orig;
+  [[maybe_unused]] Context *t_orig = t;
 
   // we actually hold locks
   if (!t->need_help(lock, val))
@@ -1146,7 +1137,7 @@ Context *
 Context::Context_member::context() const
 { return context_of(this); }
 
-IMPLEMENT inline NEEDS["lock_guard.h", "assert.h"]
+IMPLEMENT inline NEEDS["lock_guard.h", <cassert>]
 void
 Context::Drq_q::enq(Drq *rq)
 {
@@ -1162,13 +1153,17 @@ Context::Drq_q::execute_request(Drq *r, bool local)
   bool need_resched = false;
   Context *const self = context();
   if (0)
-    printf("CPU[%2u:%p]: context=%p: handle request for %p (func=%p, arg=%p)\n", cxx::int_value<Cpu_number>(current_cpu()), current(), context(), r->context(), r->func, r->arg);
+    printf("CPU[%2u:%p]: context=%p: handle request for %p (func=%p, arg=%p)\n",
+           cxx::int_value<Cpu_number>(current_cpu()),
+           static_cast<void *>(current()), static_cast<void *>(context()),
+           static_cast<void *>(r->context()), reinterpret_cast<void *>(r->func),
+           r->arg);
   if (r->context() == self)
     {
       LOG_TRACE("DRQ handling", "drq", current(), Drq_log,
           l->type = Drq_log::Type::Do_reply;
           l->rq = r;
-          l->func = (void*)r->func;
+          l->func = reinterpret_cast<void *>(r->func);
           l->thread = r->context();
           l->target_cpu = current_cpu();
           l->wait = 0;
@@ -1183,7 +1178,7 @@ Context::Drq_q::execute_request(Drq *r, bool local)
       LOG_TRACE("DRQ handling", "drq", current(), Drq_log,
           l->type = Drq_log::Type::Do_request;
           l->rq = r;
-          l->func = (void*)r->func;
+          l->func = reinterpret_cast<void *>(r->func);
           l->thread = r->context();
           l->target_cpu = current_cpu();
           l->wait = 0;
@@ -1229,7 +1224,9 @@ bool
 Context::Drq_q::handle_requests()
 {
   if (0)
-    printf("CPU[%2u:%p]: > Context::Drq_q::handle_requests() context=%p\n", cxx::int_value<Cpu_number>(current_cpu()), current(), context());
+    printf("CPU[%2u:%p]: > Context::Drq_q::handle_requests() context=%p\n",
+           cxx::int_value<Cpu_number>(current_cpu()),
+           static_cast<void *>(current()), static_cast<void *>(context()));
   bool need_resched = false;
   while (1)
     {
@@ -1245,7 +1242,11 @@ Context::Drq_q::handle_requests()
 
       Drq *r = static_cast<Drq*>(qi);
       if (0)
-        printf("CPU[%2u:%p]: context=%p: handle request for %p (func=%p, arg=%p)\n", cxx::int_value<Cpu_number>(current_cpu()), current(), context(), r->context(), r->func, r->arg);
+        printf("CPU[%2u:%p]: context=%p: handle request for %p (func=%p, arg=%p)\n",
+               cxx::int_value<Cpu_number>(current_cpu()),
+               static_cast<void *>(current()), static_cast<void *>(context()),
+               static_cast<void *>(r->context()),
+               reinterpret_cast<void *>(r->func), r->arg);
       need_resched |= execute_request(r, false);
     }
 }
@@ -1379,6 +1380,10 @@ Context::set_home_cpu(Cpu_number cpu)
  * \brief Queue a DRQ for changing the contexts state.
  * \param mask bit mask for the state (state &= mask).
  * \param add bits to add to the state (state |= add).
+ * \returns True if a reschedule is necessary (a de-blocked scheduling context
+ *          can preempt the currently running scheduling context) -- this can
+ *          only happen if `add` has any bit of `Thread_ready_mask` set.
+ *
  * \note This function is a preemption point.
  *
  * This function must be used to change the state of contexts that are
@@ -1434,18 +1439,20 @@ Context::drq(Drq *drq, Drq::Request_func *func, void *arg,
 {
   if (0)
     printf("CPU[%2u:%p]: > Context::drq(this=%p, func=%p, arg=%p)\n",
-           cxx::int_value<Cpu_number>(current_cpu()), current(), this, func, arg);
+           cxx::int_value<Cpu_number>(current_cpu()),
+           static_cast<void *>(current()), static_cast<void *>(this),
+           reinterpret_cast<void *>(func), arg);
   Context *cur = current();
   LOG_TRACE("DRQ handling", "drq", cur, Drq_log,
       l->type = Drq_log::Type::Send;
       l->rq = drq;
-      l->func = (void*)func;
+      l->func = reinterpret_cast<void *>(func);
       l->thread = this;
       l->target_cpu = home_cpu();
       l->wait = wait;
   );
-  assert(!(wait == Drq::Wait && (cur->state() & Thread_drq_ready)) || cur->home_cpu() == home_cpu());
-  assert(!((wait == Drq::Wait || drq == &_drq) && cur->state() & Thread_drq_wait));
+  assert(wait != Drq::Wait || !(cur->state() & Thread_drq_ready) || cur->home_cpu() == home_cpu());
+  assert((wait != Drq::Wait && drq != &_drq) || !(cur->state() & Thread_drq_wait));
   assert(!drq->queued());
 
   drq->func = func;
@@ -1464,7 +1471,7 @@ Context::drq(Drq *drq, Drq::Request_func *func, void *arg,
   LOG_TRACE("DRQ handling", "drq", cur, Drq_log,
       l->type = Drq_log::Type::Done;
       l->rq = drq;
-      l->func = (void*)func;
+      l->func = reinterpret_cast<void *>(func);
       l->thread = this;
       l->target_cpu = home_cpu();
       l->wait = wait;
@@ -1505,11 +1512,6 @@ Context::rcu_unblock(Rcu_item *i)
   return static_cast<Context*>(i)->xcpu_state_change(~Thread_waiting, Thread_ready);
 }
 
-PUBLIC inline
-void
-Context::recover_jmp_buf(jmp_buf *b)
-{ _recover_jmpbuf = b; }
-
 IMPLEMENT_DEFAULT inline
 void
 Context::arch_load_vcpu_kern_state(Vcpu_state *, bool)
@@ -1517,7 +1519,7 @@ Context::arch_load_vcpu_kern_state(Vcpu_state *, bool)
 
 IMPLEMENT_DEFAULT inline
 void
-Context::arch_load_vcpu_user_state(Vcpu_state *, bool)
+Context::arch_load_vcpu_user_state(Vcpu_state *)
 {}
 
 IMPLEMENT_DEFAULT inline
@@ -1540,9 +1542,29 @@ PUBLIC inline
 bool Context::migration_pending() const { return _migration; }
 
 //----------------------------------------------------------------------------
+IMPLEMENTATION [recover_jmpbuf]:
+
+PUBLIC inline void Context::set_recover_jmpbuf(jmp_buf *b)
+{ _recover_jmpbuf = b; }
+
+PUBLIC inline void Context::clear_recover_jmpbuf()
+{ _recover_jmpbuf = nullptr; }
+
+PROTECTED inline void Context::longjmp_recover_jmpbuf()
+{
+  if (_recover_jmpbuf)
+    longjmp(*_recover_jmpbuf, 1);
+}
+
+//----------------------------------------------------------------------------
+IMPLEMENTATION [!recover_jmpbuf]:
+
+PROTECTED inline void Context::longjmp_recover_jmpbuf() {}
+PROTECTED inline void Context::clear_recover_jmpbuf() {}
+
+//----------------------------------------------------------------------------
 IMPLEMENTATION [!mp]:
 
-#include "assert.h"
 #include "warn.h"
 
 PRIVATE inline
@@ -1598,7 +1620,7 @@ Context::enqueue_drq(Drq *rq)
       l->type = rq->context() == this
                                  ? Drq_log::Type::Send_reply
                                  : Drq_log::Type::Do_send;
-      l->func = (void*)rq->func;
+      l->func = reinterpret_cast<void*>(rq->func);
       l->thread = this;
       l->target_cpu = home_cpu();
       l->wait = 0;
@@ -1778,7 +1800,6 @@ protected:
 //----------------------------------------------------------------------------
 IMPLEMENTATION [mp]:
 
-#include "assert.h"
 #include "cpu_call.h"
 #include "globals.h"
 #include "ipi.h"
@@ -1866,7 +1887,9 @@ Context::Pending_rqq::handle_requests(Context **mq)
 {
   //LOG_MSG_3VAL(current(), "phq", current_cpu(), 0, 0);
   if (0)
-    printf("CPU[%2u:%p]: Context::Pending_rqq::handle_requests() this=%p\n", cxx::int_value<Cpu_number>(current_cpu()), current(), this);
+    printf("CPU[%2u:%p]: Context::Pending_rqq::handle_requests() this=%p\n",
+           cxx::int_value<Cpu_number>(current_cpu()),
+           static_cast<void *>(current()), static_cast<void *>(this));
   bool resched = false;
   Context *curr = current();
   while (1)
@@ -2068,7 +2091,7 @@ Context::enqueue_drq(Drq *rq)
       l->type = rq->context() == this
                                  ? Drq_log::Type::Send_reply
                                  : Drq_log::Type::Do_send;
-      l->func = (void*)rq->func;
+      l->func = reinterpret_cast<void*>(rq->func);
       l->thread = this;
       l->target_cpu = cpu;
       l->wait = 0;
@@ -2196,9 +2219,8 @@ Context::spill_fpu_if_owner()
 
 PUBLIC static
 void
-Context::spill_current_fpu(Cpu_number cpu)
+Context::spill_current_fpu([[maybe_unused]] Cpu_number cpu)
 {
-  (void)cpu;
   assert (cpu == current_cpu());
 
   Fpu &f = Fpu::fpu.current();
@@ -2268,9 +2290,8 @@ Context::spill_fpu_if_owner()
 
 PUBLIC static
 void
-Context::spill_current_fpu(Cpu_number cpu)
+Context::spill_current_fpu([[maybe_unused]] Cpu_number cpu)
 {
-  (void)cpu;
   assert (cpu == current_cpu());
 
   current()->spill_fpu();
@@ -2354,12 +2375,13 @@ Context::Drq_log::print(String_buffer *buf) const
     { "send", "do send", "do request", "send reply", "do reply", "done" };
 
   char const *t = "unk";
-  if ((unsigned)type < sizeof(_types)/sizeof(_types[0]))
-    t = _types[(unsigned)type];
+  if (static_cast<unsigned>(type) < cxx::size(_types))
+    t = _types[static_cast<unsigned>(type)];
 
   buf->printf("%s(%s) rq=%p to ctxt=%lx/%p (func=%p) cpu=%u",
-      t, wait ? "wait" : "no-wait", rq, Kobject_dbg::pointer_to_id(thread),
-      thread, func, cxx::int_value<Cpu_number>(target_cpu));
+      t, wait ? "wait" : "no-wait", static_cast<void const *>(rq),
+      Kobject_dbg::pointer_to_id(thread), static_cast<void *>(thread), func,
+      cxx::int_value<Cpu_number>(target_cpu));
 }
 
 // context switch

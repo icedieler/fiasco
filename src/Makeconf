@@ -5,9 +5,9 @@
 # created 1996/04/20 by hohmuth
 #
 
-CHECKCC         = $(if $(shell $(CC)  $(1) -S -o /dev/null -xc   /dev/null 2>&1),$(2),$(1))
+CHECKCC         = $(if $(shell $(CC)  $(1) -c -o /dev/null -xc   /dev/null 2>&1),$(2),$(1))
 
-CHECKCXX        = $(if $(shell $(CXX) $(1) -S -o /dev/null -xc++ /dev/null 2>&1),$(2),$(1))
+CHECKCXX        = $(if $(shell $(CXX) $(1) -c -o /dev/null -xc++ /dev/null 2>&1),$(2),$(1))
 
 CHECKLD         = $(shell if $(LD) -v "$1" > /dev/null 2>&1; then echo "$(1)"; else echo "$(2)"; fi)
 
@@ -147,16 +147,24 @@ L4STD_INCDIR    	?= -nostdinc
 L4STD_INCDIR_LAST	?= -isystem $(GCCINCDIR)
 KERNEL_LDFLAGS		+= -gc-sections
 SHARED_FLAGS            += -fno-pic
-SHARED_FLAGS            += -ffunction-sections
+SHARED_FLAGS            += -ffunction-sections -fdata-sections
 SHARED_FLAGS-gcc        += -fno-defer-pop
 SHARED_FLAGS-gcc        += $(if $(CONFIG_FULL_PATH_NAMES_IN_BINARIES),,$(call CHECKCC,-fmacro-prefix-map=$(abspath $(srcdir)/../)=.))
 # gcc #57845
 SHARED_FLAGS-gcc        += $(if $(filter sparc,$(CONFIG_XARCH)),,-freg-struct-return)
 SHARED_FLAGS-gcc	+= $(call CHECKCXX,-Wmisleading-indentation,) -Wlogical-op -Wfloat-equal
+SHARED_FLAGS-gcc	+= $(if $(filter 7 8 9 10,$(CCVER_MAJOR)),-Wno-nonnull)
 SHARED_FLAGS  		+= -g -Wall -Wextra $(call CHECKCC,-Wdouble-promotion) $(call CHECKCC,-Wfloat-conversion) -Wmissing-declarations
+# WARNING EXCEPTION: not all members of a struct used to reflect hardware state
+# are necessarily used.
 SHARED_FLAGS-clang	+= -Wno-unused-private-field
-SHARED_FLAGS-clang	+= -Wno-string-plus-int -Wno-overloaded-virtual
+# WARNING EXCEPTION: warnings about hiding overloaded functions do not expose
+# problems in this code
+SHARED_FLAGS-clang	+= -Wno-overloaded-virtual
+# WARNING EXCEPTION: checking a parameter marked with the nonnull attribute for
+# NULL is defensive programming.
 SHARED_FLAGS-gcc	+= $(if $(call CHECKCC,-Wnonnull-compare),-Wno-nonnull-compare)
+# WARNING EXCEPTION: checked during code review
 SHARED_FLAGS-gcc	+= $(if $(call CHECKCC,-Waddress-of-packed-member),-Wno-address-of-packed-member)
 SHARED_FLAGS		+= -Wundef
 
@@ -179,7 +187,8 @@ WNO_DEPRECATED_NON_PROTOTYPE := $(if $(call CHECKCC,-Wdeprecated-non-prototype),
 
 ifneq ($(CONFIG_COV),)
   SHARED_FLAGS-gcc     += -fprofile-arcs -ftest-coverage
-  SHARED_FLAGS-clang   += -fprofile-instr-generate -fcoverage-mapping
+  SHARED_FLAGS-clang   += -fprofile-instr-generate -fcoverage-mapping \
+                          -mllvm -instrprof-atomic-counter-update-all
   KERNEL_LDFLAGS       += $(KERNEL_LDFLAGS-$(CC_TYPE))
   OBJ_KERNEL-clang     += fiasco-covpath.o
   OBJ_KERNEL           += $(OBJ_KERNEL-$(CC_TYPE))
@@ -200,8 +209,9 @@ ENABLE_ALL_WARNINGS ?= n
 ifeq ($(ENABLE_ALL_WARNINGS),y)
   SHARED_FLAGS		+= $(call CHECKCC,-Wframe-larger-than=512)
 else
-  # The warning -Wmaybe-uninitialized is enabled as part of -Wall, but produces
-  # false positives with GCC on the -Os optimization level.
+  # WARNING EXCEPTION: the variables are initialized when the warned about code
+  # is reached. The false positives are only produced by GCC on -Os
+  # optimization level.
   SHARED_FLAGS-gcc	+= $(call CHECKCC,-Wno-maybe-uninitialized)
 endif
 
@@ -223,7 +233,6 @@ NOOPT_CXXFLAGS	+= $(NOOPT_SHARED_FLAGS)
 CPPFLAGS	+= $(L4STD_INCDIR) $(L4ALL_INCDIR) $(L4STD_INCDIR_LAST)
 
 CXXFLAGS	+= $(call CHECKCXX,-fno-threadsafe-statics,)
-CXXFLAGS	+= $(call CHECKCXX,-Wno-non-virtual-dtor,)
 
 ASFLAGS         += $(ASFLAGS-$(CC_TYPE))
 CPPFLAGS        += $(CPPFLAGS-$(CC_TYPE))
@@ -237,10 +246,18 @@ NOOPT_CXXFLAGS  += $(NOOPT_CXXFLAGS-$(CC_TYPE))
 GCCINCDIR   := $(shell $(CXX) $(SHARED_FLAGS) -print-file-name=include)
 
 
-# Output formatting, set V=1 to see command line, V=0 to prevent printing them
-VERBOSE		?= @
+# Output formatting:
+# - set V=0 to prevent printing them (default)
+# - set V=1 to see the command line of all tools except the preprocessor
+# - set V=2 to see the command line of all tools including the preprocessor
+#           and verbose output from `move-if-change`
+VERBOSE         ?= @
+VERBOSE_PREP    ?= @
 ifeq ($(V),1)
   VERBOSE :=
+else ifeq ($(V),2)
+  VERBOSE :=
+  VERBOSE_PREP :=
   PREP_MESSAGE  ?= @$(ECHO) "  ... Preprocessing $(filter %.cpp,$^)"
 endif
 AR_MESSAGE	?= @$(ECHO) "  ==> Archiving into $@"
@@ -261,7 +278,7 @@ COMP_MESSAGE_NOOPT ?= $(COMP_MESSAGE)
 
 ADD_CONFIGFILE   = $(VERBOSE)$(OBJCOPY) --add-section .debug.fiasco_config=globalconfig.out $(1)
 
-ifneq ($(VERBOSE),)
+ifneq ($(V),2)
 MOVE_IF_CHANGE += -q
 endif
 
@@ -284,7 +301,7 @@ CC_BLACKLIST-ia32-clang := 12 13 14
 
 CC_LAST_BROKEN-SEQ-gcc   := $(CC_LAST_BROKEN-SEQ-gcc-$(CCVER_MAJOR))
 
-
+ifneq ($(DISABLE_CC_CHECK),y)
 ifeq ($(filter $(CC_WHITELIST),$(CCVER_VERSION)),)
   $(error $(CC_TYPE)-$(CCVER_VERSION) is not supported. \
           Please use one of the following versions: $(CC_WHITELIST))
@@ -304,6 +321,7 @@ ifneq ($(strip \
 	$(filter $(CC_BLACKLIST-$(CONFIG_XARCH)-$(CC_TYPE)),$(CCVER_VERSION)) \
 	$(filter $(CC_BLACKLIST-$(CC_TYPE)),$(CCVER_VERSION))),)
   $(error $(CC_TYPE)-$(CCVER_FULL) is blacklisted, please update)
+endif
 endif
 
 else

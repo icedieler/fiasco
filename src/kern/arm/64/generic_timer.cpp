@@ -25,7 +25,7 @@ namespace Generic_timer {
     { Mword v; asm volatile("mrs %0, CNTV_CTL_EL0" : "=r" (v)); return v; }
 
     static void control(Unsigned32 v)
-    { asm volatile("msr CNTV_CTL_EL0, %0" : : "r" ((Mword)v)); }
+    { asm volatile("msr CNTV_CTL_EL0, %0" : : "r" (Mword{v})); }
 
     static void setup_timer_access()
     {
@@ -37,7 +37,7 @@ namespace Generic_timer {
     { Mword v; asm volatile ("mrs %0, CNTFRQ_EL0": "=r" (v)); return v; }
 
     static void frequency(Unsigned32 v)
-    { asm volatile ("msr CNTFRQ_EL0, %0" : : "r" ((Mword)v)); }
+    { asm volatile ("msr CNTFRQ_EL0, %0" : : "r" (Mword{v})); }
   };
 
   template<> struct T<Physical>
@@ -59,7 +59,7 @@ namespace Generic_timer {
     { Mword v; asm volatile("mrs %0, CNTP_CTL_EL0" : "=r" (v)); return v; }
 
     static void control(Unsigned32 v)
-    { asm volatile("msr CNTP_CTL_EL0, %0" : : "r" ((Mword)v)); }
+    { asm volatile("msr CNTP_CTL_EL0, %0" : : "r" (Mword{v})); }
 
     static void setup_timer_access()
     {
@@ -71,7 +71,7 @@ namespace Generic_timer {
     { Mword v; asm volatile ("mrs %0, CNTFRQ_EL0": "=r" (v)); return v; }
 
     static void frequency(Unsigned32 v)
-    { asm volatile ("msr CNTFRQ_EL0, %0" : : "r" ((Mword)v)); }
+    { asm volatile ("msr CNTFRQ_EL0, %0" : : "r" (Mword{v})); }
   };
 
   template<> struct T<Hyp>
@@ -93,21 +93,23 @@ namespace Generic_timer {
     { Mword v; asm volatile("mrs %0, CNTHP_CTL_EL2" : "=r" (v)); return v; }
 
     static void control(Unsigned32 v)
-    { asm volatile("msr CNTHP_CTL_EL2, %0" : : "r" ((Mword)v)); }
+    { asm volatile("msr CNTHP_CTL_EL2, %0" : : "r" (Mword{v})); }
 
     static void setup_timer_access()
     {
       // CNTKCTL: allow access to virtual and physical counter from EL0
       asm volatile("msr CNTKCTL_EL1, %0" : : "r"(0x3UL));
-      // CNTHCTL: allow access to physical timer from EL0 and EL1
-      asm volatile("msr CNTHCTL_EL2, %0" : : "r"(0x1UL));
+      // CNTHCTL: forbid access to physical timer from EL0 and EL1
+      asm volatile("msr CNTHCTL_EL2, %0" : : "r"(0x0UL));
+      // CNTVOFF: sync virtual and physical counter
+      asm volatile ("msr CNTVOFF_EL2, %x0" : : "r"(0));
     }
 
     static Unsigned32 frequency()
     { Mword v; asm volatile ("mrs %0, CNTFRQ_EL0": "=r" (v)); return v; }
 
     static void frequency(Unsigned32 v)
-    { asm volatile ("msr CNTFRQ_EL0, %0" : : "r" ((Mword)v)); }
+    { asm volatile ("msr CNTFRQ_EL0, %0" : : "r" (Mword{v})); }
   };
 }
 

@@ -80,12 +80,11 @@ extern "C" void sys_invoke_debug(Kobject_iface *o, Syscall_frame *f) __attribute
 
 PRIVATE inline NOEXPORT
 L4_msg_tag
-Jdb_object::sys_kobject_debug(L4_msg_tag tag, unsigned op,
+Jdb_object::sys_kobject_debug(L4_msg_tag tag, unsigned /* op */,
                               L4_fpage::Rights rights,
                               Syscall_frame *f,
                               Utcb const *r_msg, Utcb *)
 {
-  (void)op;
   if (sys_invoke_debug)
     {
       Kobject_iface *i = Ko::deref<Kobject_iface>(&tag, r_msg, &rights);
@@ -130,7 +129,7 @@ Jdb_object::sys_tbuf(L4_msg_tag tag, unsigned op,
 
         auto str = reinterpret_cast<char const *>(&r_msg->values[2]);
         Tb_entry_ke *tb = Jdb_tbuf::new_entry<Tb_entry_ke>();
-        tb->set(curr, curr->user_ip());
+        tb->set(curr, curr->regs()->ip_syscall_user());
 
         for (unsigned i = 0; i < length; ++i)
           tb->msg.set_buf(i, str[i]);
@@ -154,7 +153,7 @@ Jdb_object::sys_tbuf(L4_msg_tag tag, unsigned op,
 
         auto str = reinterpret_cast<char const *>(&r_msg->values[2]);
         Tb_entry_ke_bin *tb = Jdb_tbuf::new_entry<Tb_entry_ke_bin>();
-        tb->set(curr, curr->user_ip());
+        tb->set(curr, curr->regs()->ip_syscall_user());
 
         for (unsigned i = 0; i < length; ++i)
           tb->set_buf(i, str[i]);
@@ -175,7 +174,7 @@ Jdb_object::sys_tbuf(L4_msg_tag tag, unsigned op,
         //              but we must not read above utcb
         // values[5] == string
         Tb_entry_ke_reg *tb = Jdb_tbuf::new_entry<Tb_entry_ke_reg>();
-        tb->set(curr, curr->user_ip());
+        tb->set(curr, curr->regs()->ip_syscall_user());
         tb->v[0] = access_once(&r_msg->values[1]);
         tb->v[1] = access_once(&r_msg->values[2]);
         tb->v[2] = access_once(&r_msg->values[3]);

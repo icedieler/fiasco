@@ -5,6 +5,7 @@ EXTENSION class Jdb
 public:
   static int (*bp_test_log_only)(Cpu_number);
   static int (*bp_test_break)(Cpu_number, String_buffer *);
+  static volatile Address sysreg_fail_pc;
 };
 
 IMPLEMENTATION [arm]:
@@ -27,6 +28,7 @@ DEFINE_PER_CPU static Per_cpu<Proc::Status> jdb_irq_state;
 
 int (*Jdb::bp_test_log_only)(Cpu_number);
 int (*Jdb::bp_test_break)(Cpu_number, String_buffer *buf);
+volatile Address Jdb::sysreg_fail_pc;
 
 // ------------------------------------------------------------------------
 IMPLEMENTATION [arm && !pic_gic]:
@@ -125,6 +127,7 @@ Jdb::_wait_for_input()
 IMPLEMENTATION [arm]:
 
 #include "timer.h"
+#include "paging_bits.h"
 
 // disable interrupts before entering the kernel debugger
 IMPLEMENT
@@ -180,6 +183,21 @@ Jdb::handle_nested_trap(Jdb_entry_frame *e)
 {
   printf("Trap in JDB: IP:%08lx PSR=%08lx ERR=%08lx\n",
          e->ip(), e->psr, e->error_code);
+}
+
+IMPLEMENT_OVERRIDE
+bool
+Jdb::handle_early_debug_traps(Jdb_entry_frame *e)
+{
+  // Special handler for Jdb_kern_info_cpu.
+  if (e->ip() != 0 && e->ip() == sysreg_fail_pc)
+    {
+      sysreg_fail_pc = 0;
+      e->pc += 4;
+      return true;
+    }
+
+  return false;
 }
 
 IMPLEMENT
@@ -240,7 +258,8 @@ Jdb::init()
   Jdb::jdb_enter.add(&enter);
   Jdb::jdb_leave.add(&leave);
 
-  Thread::nested_trap_handler = (Trap_state::Handler)enter_jdb;
+  Thread::nested_trap_handler =
+    reinterpret_cast<Trap_state::Handler>(enter_jdb);
 
   Kconsole::console()->register_console(push_cons());
 }
@@ -267,19 +286,19 @@ Jdb::access_mem_task(Jdb_address addr, bool write)
     {
       phys = Address(addr.space()->virt_to_phys_s0(addr.virt()));
 
-      if (phys == (Address)-1)
+      if (phys == Invalid_address)
         return 0;
     }
   else
     phys = addr.phys();
 
   unsigned long kaddr = Mem_layout::phys_to_pmem(phys);
-  if (kaddr != (Address)-1)
+  if (kaddr != Invalid_address)
     {
       auto pte = Kmem::kdir->walk(Virt_addr(kaddr));
       if (pte.is_valid()
           && (!write || pte.attribs().rights & Page::Rights::W()))
-        return (unsigned char *)kaddr;
+        return reinterpret_cast<unsigned char *>(kaddr);
     }
 
   Mem_unit::flush_vdcache();
@@ -289,31 +308,31 @@ Jdb::access_mem_task(Jdb_address addr, bool write)
   if (!pte.is_valid()
       || pte.page_addr() != cxx::mask_lsb(phys, pte.page_order()))
     {
-          Page::Type mem_type = Page::Type::Uncached();
-          for (auto const &md: Kip::k()->mem_descs_a())
-            if (!md.is_virtual() && md.contains(phys)
-                && (md.type() == Mem_desc::Conventional))
-              {
-                mem_type = Page::Type::Normal();
-                break;
-              }
+      Page::Type mem_type = Page::Type::Uncached();
+      for (auto const &md: Kip::k()->mem_descs_a())
+        if (!md.is_virtual() && md.contains(phys)
+            && (md.type() == Mem_desc::Conventional))
+          {
+            mem_type = Page::Type::Normal();
+            break;
+          }
 
-          // Don't automatically tap into MMIO memory in Sigma0 as this usually
-          // results into some data abort exception -- aborting the current 'd'
-          // view.
-          if (mem_type == Page::Type::Uncached()
-              && addr.space()->is_sigma0())
-            return 0;
+      // Don't automatically tap into MMIO memory in Sigma0 as this usually
+      // results into some data abort exception -- aborting the current 'd'
+      // view.
+      if (mem_type == Page::Type::Uncached()
+          && !addr.is_phys() && addr.space()->is_sigma0())
+        return 0;
 
-          pte.set_page(
-            pte.make_page(Phys_mem_addr(cxx::mask_lsb(phys, pte.page_order())),
-                          Page::Attr(Page::Rights::RW(), mem_type)));
-          pte.write_back_if(true);
-          Mem_unit::tlb_flush_kernel(Mem_layout::Jdb_tmp_map_area);
+      pte.set_page(Phys_mem_addr(cxx::mask_lsb(phys, pte.page_order())),
+                   Page::Attr(Page::Rights::RW(), mem_type,
+                              Page::Kern::None()));
+      pte.write_back_if(true);
+      Mem_unit::tlb_flush_kernel(Mem_layout::Jdb_tmp_map_area);
     }
 
-  return (unsigned char *)(Mem_layout::Jdb_tmp_map_area
-                           + (phys & (Config::SUPERPAGE_SIZE - 1)));
+  return reinterpret_cast<unsigned char *>(Mem_layout::Jdb_tmp_map_area
+                                           + Super_pg::offset(phys));
 }
 
 PUBLIC static

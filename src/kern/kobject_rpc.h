@@ -85,12 +85,12 @@ check_basics(L4_msg_tag *tag, long label)
  * Helper function to dereference a capability send message
  * item and check the correct object type.
  */
-template<typename OBJ>
+template<typename OBJ> __attribute__((nonnull(5)))
 OBJ *deref_next(L4_msg_tag *tag, Utcb const *utcb,
                 L4_snd_item_iter &snd_items, Space *space,
                 Rights *rights)
 {
-  if (!snd_items.more() || !snd_items.next() || snd_items.get()->b.is_void())
+  if (!snd_items.next() || snd_items.get()->b.is_void())
     {
       *tag = commit_result(-L4_err::EInval);
       return 0;
@@ -117,7 +117,7 @@ OBJ *deref_next(L4_msg_tag *tag, Utcb const *utcb,
  * Helper to dereference exactly the first send message item as capability
  * of type `OBJ`.
  */
-template<typename OBJ>
+template<typename OBJ> __attribute__((nonnull(3)))
 OBJ *deref(L4_msg_tag *tag, Utcb const *utcb, Rights *rights)
 {
   L4_snd_item_iter snd_items(utcb, tag->words());
@@ -410,7 +410,8 @@ struct Msg : Detail::R_msg<Detail::Msg_start_state, ARGS...>
           return false;
       }
 
-    Base::read_data((char const *)(in->values), (char *)out->values);
+    Base::read_data(reinterpret_cast<char const *>(in->values),
+                    reinterpret_cast<char *>(out->values));
     __asm__ __volatile__ (
         ""
         : "=m" (*const_cast<Mword (*)[Utcb::Max_words]>(&in->values))
@@ -465,8 +466,9 @@ template<typename ...ARGS> struct Sig_msg<L4_msg_tag (ARGS...)> : Msg<ARGS...> {
 /**
  * Define a message class `Msg_##name` for the given arguments.
  */
-#define L4_RPC(opcode, name, fargs...)                 \
-  struct Msg_##name : Ko::Sig_msg<L4_msg_tag fargs>    \
+#define L4_RPC(opcode, name, ...)                      \
+  struct Msg_##name :                                  \
+    Ko::Sig_msg<L4_msg_tag __VA_ARGS__>                \
   {                                                    \
     enum : Mword { Op = opcode };                      \
     template<typename OBJ> struct Fwd                  \
@@ -482,9 +484,9 @@ template<typename ...ARGS> struct Sig_msg<L4_msg_tag (ARGS...)> : Msg<ARGS...> {
                            Utcb const *in, Utcb *out,  \
                            ARGS &&...args)             \
     {                                                  \
-      typedef Ko::Sig_msg<L4_msg_tag fargs> Self;      \
+      typedef Ko::Sig_msg<L4_msg_tag __VA_ARGS__> Self;\
       return  Self::call(tag, in, out, Fwd<OBJ>(o),    \
                          cxx::forward<ARGS>(args)...); \
     }                                                  \
-  };
+  }
 }

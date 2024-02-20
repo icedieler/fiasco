@@ -102,7 +102,7 @@ private:
       for (unsigned i = 0; i < N_spaces && spaces[i]; ++i)
         {
           if (!Mem_space::Need_xcpu_tlb_flush || spaces[i]->tlb_active_on_cpu().get(cpu))
-            spaces[i]->tlb_flush(true);
+            spaces[i]->tlb_flush_current_cpu();
         }
     }
 
@@ -129,7 +129,7 @@ private:
     void flush_stored()
     {
       for (unsigned i = 0; i < N_spaces && spaces[i]; ++i)
-        spaces[i]->tlb_flush(true);
+        spaces[i]->tlb_flush_current_cpu();
     }
   };
 
@@ -235,7 +235,7 @@ template< typename SPACE, typename M, typename O >
 inline
 L4_fpage::Rights
 v_delete(M *m, O order, L4_fpage::Rights flush_rights,
-         bool full_flush, Auto_tlb_flush<SPACE> &tlb)
+         [[maybe_unused]] bool full_flush, Auto_tlb_flush<SPACE> &tlb)
 {
   SPACE* child_space = m->space();
   assert_opt (child_space);
@@ -243,7 +243,6 @@ v_delete(M *m, O order, L4_fpage::Rights flush_rights,
                                                SPACE::to_order(order),
                                                flush_rights);
   tlb.add_page(child_space, SPACE::to_virt(m->pfn(order)), SPACE::to_order(order));
-  (void) full_flush;
   assert (full_flush != child_space->v_lookup(SPACE::to_virt(m->pfn(order))));
   return res;
 }
@@ -630,9 +629,10 @@ map(MAPDB* mapdb,
             {
               WARN("XXX Can't GRANT page from superpage (%p: " L4_PTR_FMT
                   " -> %p: " L4_PTR_FMT "), demoting to MAP\n",
-                  from_id,
-                  (unsigned long)cxx::int_value<V_pfn>(snd_addr), to_id,
-                  (unsigned long)cxx::int_value<V_pfn>(rcv_addr));
+                  static_cast<void *>(from_id),
+                  static_cast<unsigned long>(cxx::int_value<V_pfn>(snd_addr)),
+                  static_cast<void *>(to_id),
+                  static_cast<unsigned long>(cxx::int_value<V_pfn>(rcv_addr)));
               grant = 0;
             }
         }
@@ -677,6 +677,22 @@ map(MAPDB* mapdb,
                            SPACE::to_pfn(addr + size));
               Map_traits<SPACE>::free_object(r_phys, reap_list);
 
+              // Dst is equal to or an ancestor of src.
+              if (r == 2)
+                {
+                  // If dst (rcv_frame) is equal to src (sender_frame), we have
+                  // to unlock the rcv_frame here (and thereby also the
+                  // sender_frame, as they are the same and therefore use the
+                  // same lock). For the case that dst is an anchestor of src,
+                  // the sender_frame is not locked by lookup_src_dst().
+                  assert(   rcv_frame.same_lock(sender_frame)
+                         || sender_frame.frame == nullptr /* i.e. not locked */);
+                  rcv_frame.clear();
+
+                  // src is gone too
+                  continue;
+                }
+
               // unlock destination if it is not a grant is the same tree
               if (!rcv_frame.same_lock(sender_frame))
                 rcv_frame.clear();
@@ -692,11 +708,6 @@ map(MAPDB* mapdb,
               // store the still locked rcv mapping for later unlock
               sender_frame = rcv_frame;
             }
-
-          if (r == 2)
-            // src is gone too
-            continue;
-
         }
       else if (! mapdb->lookup(from_id,
                                SPACE::to_pfn(SPACE::page_address(snd_addr, s_order)),
@@ -763,11 +774,6 @@ map(MAPDB* mapdb,
             if (SPACE::Need_insert_tlb_flush)
               tlb.add_page(to, rcv_addr, i_order);
 
-            V_pfc super_offset = SPACE::subpage_offset(snd_addr, i_order);
-            if (super_offset != V_pfc(0))
-              // Just use OR here because i_phys may already contain
-              // the offset. (As is on ARM)
-              i_phys = SPACE::subpage_address(i_phys, super_offset);
             break;
           }
 
@@ -778,11 +784,11 @@ map(MAPDB* mapdb,
         case SPACE::Insert_err_exists:
           WARN("map (%s) skipping area (%p): " L4_PTR_FMT
                " -> %p: " L4_PTR_FMT "(%lx)", SPACE::name,
-               from_id,
-               (unsigned long)cxx::int_value<V_pfn>(snd_addr),
-               to_id,
-               (unsigned long)cxx::int_value<V_pfn>(rcv_addr),
-               (unsigned long)cxx::int_value<V_pfc>(size));
+               static_cast<void *>(from_id),
+               static_cast<unsigned long>(cxx::int_value<V_pfn>(snd_addr)),
+               static_cast<void *>(to_id),
+               static_cast<unsigned long>(cxx::int_value<V_pfn>(rcv_addr)),
+               static_cast<unsigned long>(cxx::int_value<V_pfc>(size)));
           // Do not flag an error here -- because according to L4
           // semantics, it isn't.
           break;
@@ -798,10 +804,10 @@ map(MAPDB* mapdb,
   if (EXPECT_FALSE(no_page_mapped))
     WARN("nothing mapped: (%s) from [%p]: " L4_PTR_FMT
          " size: " L4_PTR_FMT " to [%p]\n", SPACE::name,
-         from_id,
-         (unsigned long)cxx::int_value<V_pfn>(snd_addr),
-         (unsigned long)cxx::int_value<V_pfc>(rcv_size),
-         to_id);
+         static_cast<void *>(from_id),
+         static_cast<unsigned long>(cxx::int_value<V_pfn>(snd_addr)),
+         static_cast<unsigned long>(cxx::int_value<V_pfc>(rcv_size)),
+         static_cast<void *>(to_id));
 
   if (condition.ok() && no_page_mapped)
     condition.set_empty_map();
@@ -811,16 +817,15 @@ map(MAPDB* mapdb,
 // save access rights for Mem_space
 inline template<typename MAPDB>
 void
-save_access_flags(Mem_space *space, typename Mem_space::V_pfn page_address, bool me_too,
-                  typename MAPDB::Frame const &mapdb_frame,
+save_access_flags(Mem_space *space, typename Mem_space::V_pfn page_address,
+                  bool /* me_too */,
+                  typename MAPDB::Frame const& /* mapdb_frame */,
                   L4_fpage::Rights page_rights)
 {
   if (L4_fpage::Rights accessed = page_rights & (L4_fpage::Rights::RW()))
     {
       space->v_set_access_flags(page_address, accessed);
 
-      (void) me_too;
-      (void) mapdb_frame;
       // we have no back reference to our parent, so
       // we cannot store the access rights there in
       // the me_too case...

@@ -238,7 +238,7 @@ Jdb_thread_list::sc_wfq_iter_next(Sched_context *t)
   if (!rl || rl == RQP::idle(rq))
     return RQP::cnt(rq) ? RQP::heap(rq)[0] : *RQP::idle(rq);
 
-  if ((unsigned)(rl - RQP::heap(rq)) >= RQP::cnt(rq))
+  if (static_cast<unsigned>(rl - RQP::heap(rq)) >= RQP::cnt(rq))
     return *RQP::idle(rq);
 
   return *(rl + 1);
@@ -576,7 +576,7 @@ Jdb_thread_list::action(int cmd, void *&argbuf, char const *&fmt, int &) overrid
 	  return EXTRA_INPUT;
 	}
 
-      Thread *t = Jdb::get_current_active();
+      Thread *t = Jdb::get_thread(Jdb::current_cpu);
       switch (subcmd)
 	{
         case 'r': cpu = Cpu_number::first(); list_threads(t, 'r'); break;
@@ -595,7 +595,7 @@ Jdb_thread_list::action(int cmd, void *&argbuf, char const *&fmt, int &) overrid
     }
   else if (cmd == 1)
     {
-      Thread *t = Jdb::get_current_active();
+      Thread *t = Jdb::get_thread(Jdb::current_cpu);
 
       {
         // Hm, we are in JDB, however we have to make the assertion in
@@ -625,7 +625,7 @@ Jdb_thread_list::print_thread_name(Kobject_common const * o, int len)
 
   if (nx)
     {
-      len = min((int)nx->max_len(), len);
+      len = min(nx->max_len(), len);
       printf("%-*.*s", len, len, nx->name());
     }
   else
@@ -656,7 +656,7 @@ Jdb_thread_list::list_threads_show_thread(Thread *t)
   print_thread_name(t, 15);
   plen += 15;
 
-  plen += printf("  %2lx ", (unsigned long)get_prio(t));
+  plen += printf("  %2lx ", get_prio(t));
 
   if (get_space_dbgid(t) == ~0L)
     plen += printf(" ----- ");
@@ -689,7 +689,7 @@ Jdb_thread_list::list_threads_show_thread(Thread *t)
 	    strcpy(to, " >99s");
 	  else
 	    {
-	      int us = (int)diff;
+	      int us = diff;
 	      if (us < 0)
 		us = 0;
 	      if (us >= 1000000)
@@ -714,7 +714,7 @@ Jdb_thread_list::list_threads_show_thread(Thread *t)
       if (Config::Stack_depth)
 	{
 	  Mword i, stack_depth;
-	  char *c  = (char*)t + sizeof (Thread);
+	  char *c  = reinterpret_cast<char*>(t) + sizeof (Thread);
 	  for (i = sizeof (Thread), stack_depth = Context::Size;
 	      i < Context::Size;
 	      i++, stack_depth--, c++)
@@ -724,7 +724,7 @@ Jdb_thread_list::list_threads_show_thread(Thread *t)
 	  plen += printf("(%4lu) ", stack_depth - sizeof (Thread));
 	}
 
-      if ((int)Jdb_screen::width() > plen)
+      if (static_cast<int>(Jdb_screen::width()) > plen)
 	Jdb_thread::print_state_long(t, Jdb_screen::width() - plen);
       putstr("\033[K\n");
     }

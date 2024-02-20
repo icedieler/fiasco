@@ -80,7 +80,7 @@ IMPLEMENTATION [arm && perf_cnt && !(arm_mpcore || arm_v7 || arm_v8)]:
 
 char const *Perf_cnt::perf_type_str = "none";
 
-PUBLIC static inline FIASCO_INIT_CPU
+PUBLIC static inline FIASCO_INIT_CPU_SFX(init_cpu)
 void
 Perf_cnt::init_cpu()
 {}
@@ -271,8 +271,8 @@ Perf_cnt::get_perf_event(Mword nr, unsigned *evntsel,
   snprintf(_desc, sizeof(_desc), "Check manual for description of event %lx", nr);
   _desc[sizeof(_desc) - 1] = 0;
 
-  *name = (const char *)&_name;
-  *desc = (const char *)&_desc;
+  *name = static_cast<const char *>(_name);
+  *desc = static_cast<const char *>(_desc);
   *evntsel = nr;
 }
 
@@ -283,7 +283,7 @@ Perf_cnt::split_event(Mword event, unsigned *evntsel, Mword *)
 }
 
 PUBLIC static Mword
-Perf_cnt::lookup_event(Mword) { return is_avail() ? 0 : (Mword)-1; }
+Perf_cnt::lookup_event(Mword) { return is_avail() ? 0 : static_cast<Mword>(-1); }
 
 PUBLIC static void
 Perf_cnt::combine_event(Mword evntsel, Mword, Mword *event)
@@ -310,7 +310,7 @@ Perf_cnt::init()
   // Tb_entry::set_cycle_read_func(read_cycle_cnt);
 }
 
-PUBLIC static inline NEEDS[Perf_cnt::init_cpu] FIASCO_INIT_CPU
+PUBLIC static inline NEEDS[Perf_cnt::init_cpu] FIASCO_INIT_CPU_SFX(init_ap)
 void
 Perf_cnt::init_ap()
 {
