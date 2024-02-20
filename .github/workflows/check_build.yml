@@ -12,10 +12,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Install cross compiler toolchain
-      uses: cyberjunk/gha-ubuntu-cross@v4
-      with:
-        arch: arm64
+    - name: Install cross compiler toolchains
+      run: apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-12-aarch64-linux-gnu g++-12-aarch64-linux-gnu gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf gcc-12-arm-linux-gnueabihf g++-12-arm-linux-gnueabihf
+      #uses: cyberjunk/gha-ubuntu-cross@v4
+      #with:
+      #  arch: [ "arm64", "armhf" ]
     - uses: actions/checkout@v4.1.1
     - name: make
       run: make 'TEMPLATE_FILTER=amd64-1 arm64-virt-el2' -j -l 22 l4check
