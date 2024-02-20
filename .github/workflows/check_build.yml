@@ -14,4 +14,4 @@ jobs:
     steps:
     - uses: actions/checkout@v4.1.1
     - name: make
-      run: make TEMPLATE_FILTER=amd64-1 -j -l 22 l4check
+      run: make 'TEMPLATE_FILTER=amd64-1 arm64-virt-el2' -j -l 22 l4check
