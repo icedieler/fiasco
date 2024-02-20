@@ -12,6 +12,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4.1.1
     - name: make
       run: make TEMPLATE_FILTER=amd64-1 -j -l 22 l4check
