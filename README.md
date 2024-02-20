@@ -9,11 +9,11 @@ running real-time, time-sharing and virtualization workloads concurrently on
 one system. The kernel scales from big and complex systems down to small and
 embedded applications. It supports the following architectures:
 
-| Architecture | 32 bit | 64 bit | Status           |
-|:------------:|:------:|:------:|:----------------:|
-|      x86     |    x   |   x    | [Build check][3] |
-|      ARM     |    x   |   x    | [Build check][4] |
-|      MIPS    |    x   |   x    |                  |
+| Architecture | 32 bit | 64 bit | Status            |
+|:------------:|:------:|:------:|:-----------------:|
+|      x86     |    x   |   x    | ![Build check][3] |
+|      ARM     |    x   |   x    | ![Build check][4] |
+|      MIPS    |    x   |   x    |                   |
 
 For a full list of the supported platforms and features see the [feature
 list][1].
