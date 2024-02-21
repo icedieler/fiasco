@@ -16,4 +16,4 @@ jobs:
       run: sudo apt-get install gcc-mips-linux-gnu g++-mips-linux-gnu gcc-10-mips-linux-gnu g++-10-mips-linux-gnu
     - uses: actions/checkout@v4.1.1
     - name: make
-      run: make 'TEMPLATE_FILTER=mips-malta-mp mips-malta-64r2-mp' -j -l 22 l4check
+      run: make CROSS_COMPILE=mips-linux-gnu- 'TEMPLATE_FILTER=mips-malta-mp mips-malta-64r2-mp' -j -l 22 l4check
