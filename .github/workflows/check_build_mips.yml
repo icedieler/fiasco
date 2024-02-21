@@ -1,0 +1,19 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Install cross compiler toolchains
+      run: sudo apt-get install gcc-mipsel-linux-gnu g++-mipsel-linux-gnu gcc-12-mipsel-linux-gnu g++-12-mipsel-linux-gnu
+    - uses: actions/checkout@v4.1.1
+    - name: make
+      run: make 'TEMPLATE_FILTER=mips-malta-mp mips-malta-64r2-mp' -j -l 22 l4check
